@@ -16,7 +16,7 @@ the command line and is described in the thesis Methods, not reproduced here.
 | `mGlio_QC.Rmd` | Methods 3.1 (QC); Fig S1 | Mouse QC, doublet removal, preprocessing |
 | `TCGA_GBM_expression_profile.Rmd` | Pulling TCGA reference dataset for analysis | TCGA dataset for comparison and identification of cluster subtypes in Fig 3 |
 | `Glioma_Visualization_main.Rmd` | Results 4.1 & 4.2; Figs 3, 4, 5, S2, S3, S4 | Subtype annotation, module scores, DE screen, rank concordance, log2FC heatmaps, candidate feature/dot plots |
-Library_singlecell.R | Shared library/function loading | sourced by the other scripts |
+Library_singlecell.R | Shared library/function loading | All libraries required by other scripts (with redundancy) |
 
 ## Notes
 - Set the `projPath` in the config chunk of each file to your local path.
