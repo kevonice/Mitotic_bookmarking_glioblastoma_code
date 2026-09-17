@@ -1,0 +1,1923 @@
+---
+title: "Glioma_Visualization_Combined"
+author: "Kevin Mathews"
+date: "2026-01-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1. Configuration
+
+```{r config}
+# UPDATE this path to match your machine
+projPath <- "D:/Kevin/2026-01-08_Glioma/"
+
+plot_save <- paste0(projPath, "plots/")
+```
+
+# 2. Libraries
+
+```{r libraries, message=FALSE, warning=FALSE}
+source(paste0(projPath, "scripts/Library_singlecell.R"))
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(patchwork)
+library(ggpubr)
+library(ggrastr)
+library(RColorBrewer)
+library(viridis)
+library(tibble)
+library(data.table)
+library(pbapply)
+library(stringi)
+library(matrixStats)
+library(fastmatch)
+library(future)
+library(zoo)
+library(rlang)
+library(readxl)
+library(writexl)
+library(hdf5r)
+library(scCustomize)
+library(ggseqlogo)
+library(chromVAR)
+library(JASPAR2020)
+library(TFBSTools)
+library(motifmatchr)
+library(terra)
+library(raster)
+library(ks)
+library(DHARMa)
+library(Nebulosa)
+library(pagoda2)
+library(Pando)
+library(grid)
+library(ComplexHeatmap)
+library(pheatmap)
+library(circlize)
+library(scales)
+library(openxlsx)
+library(stringr)
+
+```
+
+# 3. Gene Lists
+
+```{r gene_lists_histone}
+# --- Histone Modifiers ---
+HMTs  <- c('KMT2A','KMT2B','KMT2C','KMT2D','KMT2E','SETD1A','SETD1B','EHMT1','EHMT2',
+           'SUV39H1','SUV39H2','SETDB1','SETDB2','EZH1','EZH2','SETD2','NSD1','NSD2',
+           'NSD3','ASH1L','SMYD2','SMYD3','DOT1L','KMT5A','KMT5B','KMT5C','SETMAR',
+           'SETD3','SETD4','SETD5','SETD6','SETD7','PRDM1','PRDM2','PRDM4','PRDM5',
+           'PRDM6','PRDM8','PRDM9','PRDM10','PRDM11','PRDM12','PRDM13','PRDM14','PRDM15','PRDM16')
+
+HDMs  <- c('KDM1A','KDM1B','KDM2A','KDM2B','KDM3A','KDM3B','JMJD1C','KDM4A','KDM4B',
+           'KDM4C','KDM4D','KDM5A','KDM5B','KDM5C','KDM5D','KDM6A','KDM6B','UTY',
+           'KDM7A','PHF8','PHF2','KDM8')
+
+HATs  <- c('KAT2A','KAT2B','HAT1','KAT5','KAT6A','KAT6B','KAT7','KAT8','EP300','CREBBP',
+           'CLOCK','NCOA3','NCOA1','NCOA2','TAF1','ESCO1','ESCO2','NAT10')
+
+HDACs <- c('HDAC1','HDAC2','HDAC3','HDAC4','HDAC5','HDAC6','HDAC7','HDAC8','HDAC9',
+           'HDAC10','HDAC11','SIRT1','SIRT2','SIRT3','SIRT4','SIRT5','SIRT6','SIRT7')
+
+histone_modifiers_human <- list(HMTs = HMTs, HDMs = HDMs, HATs = HATs, HDACs = HDACs)
+histone_modifiers_mouse <- lapply(histone_modifiers_human, function(group) {
+  str_to_title(group)
+})
+```
+
+```{r gene_lists_chromatin}
+# --- Chromatin Complexes ---
+BAF   <- c("PHF10","DPF1","DPF3","DPF2","SMARCB1","ACTL6A","ACTL6B","SMARCE1",
+           "SMARCD1","SMARCD2","SMARCD3","SMARCC1","SMARCC2","PBRM1","ARID2",
+           "ARID1A","ARID1B","SMARCA4","SMARCA2","ACTB")
+
+INO80 <- c("ACTR5","MCRS1","NFRKB","INO80B","INO80C","INO80","UCHL5","TFPT",
+           "ACTL6A","ACTR8","RUVBL1","RUVBL2","YY1","MEAF6","BRD8","MRGBP",
+           "ING3","KAT5","TRRAP","VPS72","EP400","MORF4L1","DMAP1","ACTB",
+           "H2AFZ","YEATS4","SRCAP","ACTR6")
+
+ISWI  <- c("POLE3","BAZ1A","SMARCA5","BPTF","RBBP7","RBBP4","SMARCA1","RSF1",
+           "BAZ1B","BAZ2A","CECR2")
+
+NuRD  <- c("CHD3","CHD4","HDAC1","HDAC2","MBD2","MBD3","MTA1","MTA2","MTA3",
+           "RBBP7","RBBP4")
+
+chromatin_complexes_human <- list(BAF = BAF, INO80 = INO80, ISWI = ISWI, NuRD = NuRD)
+chromatin_complexes_mouse <- lapply(chromatin_complexes_human,function(group){
+  str_to_title(group)
+})
+```
+
+# 4. Load Data
+
+```{r load_data, cache=TRUE}
+hGlio <- readRDS(paste0(projPath, "hGlio_final.rds")) # previously used human_working_2025-12-07.rds
+
+mGlio <- readRDS(paste0(projPath, "mGlio_final.rds")) # previously used mouse_working_2025-12-07.rds
+```
+
+# 5. DimPlots
+
+```{r dimplots}
+ann_colors <- c(PN = "#00BA38", CL = "#619CFF", MES = "#F8766D", MIX = "#C77CFF")
+
+p_human <- DimPlot(hGlio, reduction = "wnn.umap", group.by = "Duy_clusters", order = TRUE,
+                   cols = ann_colors, pt.size = 0.4) + ggtitle(NULL) + theme_void() + theme(legend.position = NULL) + NoLegend()
+p_mouse <- DimPlot(mGlio, reduction = "wnn.umap", order = TRUE, cols = ann_colors, pt.size = 0.4, alpha = 0.5)+ ggtitle(NULL) + theme_void() + theme(legend.position = NULL) + NoLegend()
+
+
+ggsave("umap_human_1.png", plot = p_human, dpi = 300,
+       width = 3, height = 3, units = "in")
+
+ggsave("umap_mouse_2.png", plot = p_mouse, dpi = 300,
+       width = 3, height = 3, units = "in")
+p_human + p_mouse
+```
+
+---
+
+# 6. Histone Modifier Analyses
+
+## 6a. Human Histone Modifiers
+
+```{r histone_human_setup}
+obj      <- hGlio
+obj_name <- "hGlio"
+
+hist_genes <- c(HMTs,HDMs,HDACs,HATs)  # already uppercase for human
+```
+
+### Feature Plots
+
+```{r histone_human_features (WIP), fig.width=18, fig.height=24}
+plot <- FeaturePlot(hGlio, features = histone_modifiers_human$HMTs, reduction = 'wnn.umap',min.cutoff = 0, order = T, pt.size = 0.5,ncol=6) &
+  theme_void()&
+  theme(plot.title=element_text(size=18,hjust=0.4)) & no_legend()
+plot
+```
+
+
+
+
+### Expression Heatmap
+
+<!-- [moved to exploratory_not_in_thesis.Rmd] scaled average-expression matrix (RNA) -->
+
+#### pheatmap 
+<!-- [moved to exploratory_not_in_thesis.Rmd] scaled avg-expression pheatmaps -->
+
+```{r}
+genesets_mouse <- c('Sox10','Erbb3', "Myt1","Gpr17","Slc1a1",'Tgfbi','Col5a1','Adamts2',"Itga4", "Igfbp3","Egfr",'Elovl2', 'Robo2','Bmpr1b','Slc7a11')
+
+genesets_human <- c('SOX10','ERBB3',"MYT1", "GPR17",'CA10',"TGFBI", "COL5A1", "ADAMTS2", "ITGA4", "IGFBP3","EGFR",'ELOVL2','ROBO2','BMPR1B', "SPRY2")
+```
+
+```{r}
+library(Seurat)
+library(dplyr)
+library(tibble)
+
+
+# --- signatures as named lists (human example) ---
+sig_human <- list(
+  PN  = c("SOX10","ERBB3","MYT1","GPR17","CA10"),
+  MES = c("TGFBI","COL5A1","ADAMTS2","ITGA4","IGFBP3"),
+  CL  = c("EGFR","ELOVL2","ROBO2","BMPR1B","SPRY2")
+)
+
+DefaultAssay(hGlio) <- "RNA"   # score on RNA, not ATAC
+
+# --- add one module score per signature ---
+hGlio <- AddModuleScore(hGlio, features = sig_human,
+                        name = "sig_", seed = 62)
+# creates columns sig_1, sig_2, sig_3 in the order of the list (PN, MES, CL)
+
+# rename IN THE OBJECT so score_* columns are usable downstream (FeaturePlot)
+idx <- match(c("sig_1","sig_2","sig_3"), colnames(hGlio@meta.data))
+colnames(hGlio@meta.data)[idx] <- c("score_PN","score_MES","score_CL")
+
+# --- average each score within each assigned subtype ---
+subtype_col <- "Duy_clusters"   # <-- replace with your actual metadata column name
+
+tab_human <- hGlio@meta.data %>%
+  group_by(.data[[subtype_col]]) %>%
+  summarise(PN  = mean(score_PN),
+            MES = mean(score_MES),
+            CL  = mean(score_CL), .groups = "drop") %>%
+  column_to_rownames(subtype_col)
+lvl_row <- c("PN","MES","CL","MIX")   # row order (subtypes)
+lvl_col <- c("PN","MES","CL")          # column order (signatures)
+
+tab_human <- tab_human[lvl_row, lvl_col]  
+tab_human   # this is your 4x3 table (rows: PN/MES/CL/MIX, cols: signatures)
+
+```
+
+```{r mglio scoring}
+library(Seurat)
+library(dplyr)
+library(tibble)
+library(pheatmap)
+
+# --- mouse signatures (species-appropriate symbols) ---
+sig_mouse <- list(
+  PN  = c("Sox10","Erbb3","Myt1","Gpr17","Slc1a1"),
+  MES = c("Tgfbi","Col5a1","Adamts2","Itga4","Igfbp3"),
+  CL  = c("Egfr","Elovl2","Robo2","Bmpr1b","Slc7a11")
+)
+
+DefaultAssay(mGlio) <- "RNA"   # score on RNA, not ATAC
+
+# --- add one module score per signature ---
+mGlio <- AddModuleScore(mGlio, features = sig_mouse,
+                        name = "sig_", seed = 62)
+# creates sig_1, sig_2, sig_3 in list order: PN, MES, CL
+
+# --- rename IN THE OBJECT ---
+idx <- match(c("sig_1","sig_2","sig_3"), colnames(mGlio@meta.data))
+colnames(mGlio@meta.data)[idx] <- c("score_PN","score_MES","score_CL")
+
+# --- average each score within each assigned subtype ---
+subtype_col <- "Duy_clusters"   # <-- replace with your ACTUAL mouse metadata column name
+
+tab_mouse <- mGlio@meta.data %>%
+  group_by(.data[[subtype_col]]) %>%
+  summarise(PN  = mean(score_PN),
+            MES = mean(score_MES),
+            CL  = mean(score_CL), .groups = "drop") %>%
+  column_to_rownames(subtype_col)
+
+# --- enforce matching row/column order so the diagonal reads as a diagonal ---
+lvl_row <- c("PN","MES","CL","MIX")
+lvl_col <- c("PN","MES","CL")
+tab_mouse <- tab_mouse[lvl_row, lvl_col]
+
+tab_mouse   # eyeball before plotting
+
+```
+
+```{r score heatmaps, fig.width= 6, fig.height = 3}
+library(pheatmap)
+library(viridisLite)
+
+# shared range across both species so the two heatmaps are directly comparable
+rng <- range(c(as.matrix(tab_mouse), as.matrix(tab_human)))
+brk <- seq(rng[1], rng[2], length.out = 101)
+
+score_heatmap_human <- pheatmap(as.matrix(tab_human),
+         cluster_rows = FALSE, cluster_cols = FALSE,
+         display_numbers = TRUE,
+         fontsize_number = 12,
+         number_color = "grey80",
+         color = rev(inferno(100)),
+         breaks = brk)
+
+score_heatmap_mouse <- pheatmap(as.matrix(tab_mouse),
+         cluster_rows = FALSE, cluster_cols = FALSE,
+         display_numbers = TRUE,
+         fontsize_number = 12,
+         number_color = "grey80",
+         color = rev(inferno(100)),
+         breaks = brk)
+
+ggsave("pheatmap_modulescore_hGlio.png", plot = score_heatmap_human, dpi = 300,
+       width = 6, height = 4, units = "in")
+ggsave("pheatmap_modulescore_mGlio.png", plot = score_heatmap_mouse, dpi = 300,
+       width = 6, height = 4, units = "in")
+```
+
+```{r module score featureplots}
+# helper: one FeaturePlot + one ggsave per score, diverging scale centred at 0
+plot_score <- function(obj, score, prefix, reduction = "wnn.umap", dpi = 300) {
+  lim <- max(abs(obj@meta.data[[score]]))
+  p <- FeaturePlot(obj, features = score, reduction = reduction, order = TRUE, pt.size = 1) +
+    scale_colour_gradientn(colours = magma(100), name = "score")
+  ggsave(paste0(prefix, "_modulescore_", sub("score_", "", score), "_umap.png"),
+         plot = p, dpi = dpi, width = 5, height = 4, units = "in")
+  p
+}
+
+# confirm the reduction name first: names(hGlio@reductions) / names(mGlio@reductions)
+
+# human
+plot_score(hGlio, "score_PN",  "hGlio")
+
+plot_score(hGlio, "score_MES", "hGlio")
+plot_score(hGlio, "score_CL",  "hGlio")
+
+# mouse
+plot_score(mGlio, "score_PN",  "mGlio")
+plot_score(mGlio, "score_MES", "mGlio")
+plot_score(mGlio, "score_CL",  "mGlio")
+```
+
+<!-- [moved to exploratory_not_in_thesis.Rmd] mix score test [scratch] -->
+<!-- [moved to exploratory_not_in_thesis.Rmd] mix test [scratch] -->
+
+
+```{r, fig.width= 8}
+library(RColorBrewer)
+
+DotPlot(hGlio, features = genesets_human, cluster.idents = TRUE) +
+  scale_colour_gradient2(
+    low  = "#B2182B",   # depleted (below average)
+    mid  = "grey90",    # ~zero
+    high = "#2166AC",   # enriched (above average)
+    midpoint = 0,
+    name = "Scaled\nexpression"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+subtype_order <- c("Proneural", "Mesenchymal", "Classical", "MIX")
+
+mGlio$Duy_clusters <- factor(mGlio$Duy_clusters, levels = subtype_order)
+hGlio$Duy_clusters  <- factor(hGlio$Duy_clusters,  levels = subtype_order)
+
+mouse_genes <- c('Sox10','Erbb3','Myt1','Gpr17','Slc1a1',
+                  'Tgfbi','Col5a1','Adamts2','Itga4','Igfbp3',
+                  'Egfr','Elovl2','Robo2','Bmpr1b','Slc7a11')
+
+human_genes <- c('SOX10','ERBB3','MYT1','GPR17','CA10',
+                   'TGFBI','COL5A1','ADAMTS2','ITGA4','IGFBP3',
+                   'EGFR','ELOVL2','ROBO2','BMPR1B','SPRY2')
+
+mGlio <- ScaleData(mGlio, features = mouse_genes, assay = "RNA")
+hGlio <- ScaleData(hGlio, features = human_genes, assay = "RNA")
+
+p_mouse <- DoHeatmap(subset(mGlio, downsample = 300), features = mouse_genes,
+                      group.by = "Duy_clusters", assay = "RNA") +
+  scale_fill_gradientn(colors = c("#2166AC","white","#B2182B"), limits = c(-2, 2))
+
+p_human <- DoHeatmap(subset(hGlio, downsample = 300), features = human_genes,
+                      group.by = "Duy_clusters", assay = "RNA") +
+  scale_fill_gradientn(colors = c("#2166AC","white","#B2182B"), limits = c(-2, 2))
+```
+
+```{r score heatmap}
+library(Seurat)
+library(dplyr)
+library(tibble)
+
+
+# --- signatures as named lists (human example) ---
+sig_human <- list(
+  PN  = c("SOX10","ERBB3","MYT1","GPR17","CA10"),
+  MES = c("TGFBI","COL5A1","ADAMTS2","ITGA4","IGFBP3"),
+  CL  = c("EGFR","ELOVL2","ROBO2","BMPR1B","SPRY2")
+)
+
+DefaultAssay(hGlio) <- "RNA"   # score on RNA, not ATAC
+
+# --- add one module score per signature ---
+hGlio <- AddModuleScore(hGlio, features = sig_human,
+                        name = "sig_", seed = 62)
+# creates columns sig_1, sig_2, sig_3 in the order of the list (PN, MES, CL)
+
+# rename so the columns are readable
+meta <- hGlio@meta.data
+colnames(meta)[colnames(meta) %in% c("sig_1","sig_2","sig_3")] <-
+  c("score_PN","score_MES","score_CL")
+
+# --- average each score within each assigned subtype ---
+subtype_col <- "Duy_clusters"   # <-- replace with your actual metadata column name
+
+tab_human <- meta %>%
+  group_by(.data[[subtype_col]]) %>%
+  summarise(PN  = mean(score_PN),
+            MES = mean(score_MES),
+            CL  = mean(score_CL), .groups = "drop") %>%
+  column_to_rownames(subtype_col)
+lvl_row <- c("PN","MES","CL","MIX")   # row order (subtypes)
+lvl_col <- c("PN","MES","CL")          # column order (signatures)
+
+tab_human <- tab_human[lvl_row, lvl_col]  
+tab_human   # this is your 4x3 table (rows: PN/MES/CL/MIX, cols: signatures)
+
+```
+
+```{r}
+library(pheatmap)
+
+library(viridisLite)
+
+rng  <- range(c(as.matrix(tab_mouse),as.matrix(tab_human)))
+brk <- seq(rng[1],rng[2],length.out = 101)
+m_h <- as.matrix(tab_human)
+num_cols_human <- ifelse(!is.na(m_h) & m_h < 0, "white", "black")
+score_heatmap_human <- pheatmap(as.matrix(tab_human),
+         cluster_rows = FALSE, cluster_cols = FALSE,
+         display_numbers = TRUE,
+         fontsize_number = 14,
+         number_color = as.vector(num_cols_human),
+         color = inferno(100),
+         breaks =brk)
+```
+
+
+
+```{r save image module score heatmap human}
+ggsave("pheatmap_modulescore_hGlio.png", plot = score_heatmap_human, dpi = 300,
+       width = 6, height = 4, units = "in")
+```
+
+
+```{r mglio scoring}
+library(Seurat)
+library(dplyr)
+library(tibble)
+library(pheatmap)
+
+# --- mouse signatures (species-appropriate symbols) ---
+sig_mouse <- list(
+  PN  = c("Sox10","Erbb3","Myt1","Gpr17","Slc1a1"),
+  MES = c("Tgfbi","Col5a1","Adamts2","Itga4","Igfbp3"),
+  CL  = c("Egfr","Elovl2","Robo2","Bmpr1b","Slc7a11")
+)
+
+DefaultAssay(mGlio) <- "RNA"   # score on RNA, not ATAC
+
+# --- add one module score per signature ---
+mGlio <- AddModuleScore(mGlio, features = sig_mouse,
+                        name = "sig_", seed = 62)
+# creates sig_1, sig_2, sig_3 in list order: PN, MES, CL
+
+# --- rename score columns ---
+meta <- mGlio@meta.data
+colnames(meta)[colnames(meta) %in% c("sig_1","sig_2","sig_3")] <-
+  c("score_PN","score_MES","score_CL")
+
+# --- average each score within each assigned subtype ---
+subtype_col <- "Duy_clusters"   # <-- replace with your ACTUAL mouse metadata column name
+
+tab_mouse <- meta %>%
+  group_by(.data[[subtype_col]]) %>%
+  summarise(PN  = mean(score_PN),
+            MES = mean(score_MES),
+            CL  = mean(score_CL), .groups = "drop") %>%
+  column_to_rownames(subtype_col)
+
+# --- enforce matching row/column order so the diagonal reads as a diagonal ---
+lvl_row <- c("PN","MES","CL","MIX")
+lvl_col <- c("PN","MES","CL")
+tab_mouse <- tab_mouse[lvl_row, lvl_col]
+
+tab_mouse   # eyeball before plotting
+m_m <- as.matrix(tab_mouse)
+num_cols_mouse <- ifelse(!is.na(m_m) & m_m < 0, "white", "black")
+
+# --- heatmap ---
+score_heatmap_mouse <- pheatmap(as.matrix(tab_mouse),
+         cluster_rows = FALSE, cluster_cols= FALSE,
+         display_numbers = TRUE,
+         fontsize_number = 14,
+         number_color = as.vector(num_cols_mouse),
+         color = inferno(100),
+         breaks = brk) # 
+```
+
+```{r}
+ggsave("pheatmap_modulescore_mGlio.png", plot = score_heatmap_mouse, dpi = 300,
+       width = 6, height = 4, units = "in")
+```
+
+```{r}
+for (obj_name in c("hGlio", "mGlio")) {
+  obj <- get(obj_name)
+  idx <- match(c("sig_1","sig_2","sig_3"), colnames(obj@meta.data))
+  colnames(obj@meta.data)[idx] <- c("score_PN","score_MES","score_CL")
+  assign(obj_name, obj)
+}
+```
+
+
+
+
+
+
+library(Seurat)
+library(dplyr)
+library(tibble)
+
+
+
+
+```{r Find Markers human & mouse histone modifiers }
+# Filter to genes actually present in RNA assay
+Idents(hGlio) <- "Duy_clusters"
+available_genes_human <- rownames(hGlio@assays$RNA)
+genes_to_test_human   <- unlist(histone_modifiers_human, use.names = FALSE)[
+  unlist(histone_modifiers_human, use.names = FALSE) %in% available_genes_human]
+
+# Run FindMarkers per cluster - Human
+markers_list_human <- list()
+for (cluster in levels(Idents(hGlio))) {
+  markers <- tryCatch(
+    FindMarkers(
+      hGlio,
+      ident.1         = cluster,
+      assay           = "RNA",
+      features        = genes_to_test_human,
+      logfc.threshold = -Inf,
+      min.pct         = 0,
+      test.use        = "wilcox"
+    ),
+    error = function(e) NULL
+  )
+  if (!is.null(markers) && nrow(markers) > 0) {
+    markers$cluster <- cluster
+    markers$gene    <- rownames(markers)
+    markers_list_human[[cluster]] <- markers
+  }
+}
+hist_markers_human <- do.call(rbind, markers_list_human)
+rownames(hist_markers_human) <- NULL
+
+# Filter to genes actually present in RNA assay
+Idents(mGlio) <- "Duy_clusters"
+available_genes_mouse <- rownames(mGlio@assays$RNA)
+genes_to_test_mouse   <- unlist(histone_modifiers_mouse, use.names = FALSE)[
+  unlist(histone_modifiers_mouse, use.names = FALSE) %in% available_genes_mouse]
+
+# Run FindMarkers per cluster - Mouse
+markers_list_mouse <- list()
+for (cluster in levels(Idents(mGlio))) {
+  markers <- tryCatch(
+    FindMarkers(
+      mGlio,
+      ident.1         = cluster,
+      assay           = "RNA",
+      features        = genes_to_test_mouse,
+      logfc.threshold = -Inf,
+      min.pct         = 0,
+      test.use        = "wilcox"
+    ),
+    error = function(e) NULL
+  )
+  if (!is.null(markers) && nrow(markers) > 0) {
+    markers$cluster <- cluster
+    markers$gene    <- rownames(markers)
+    markers_list_mouse[[cluster]] <- markers
+  }
+}
+hist_markers_mouse <- do.call(rbind, markers_list_mouse)
+rownames(hist_markers_mouse) <- NULL
+```
+
+
+```{r Find Markers human & mouse chromatin modifiers }
+# Filter to genes actually present in RNA assay
+Idents(hGlio) <- "Duy_clusters"
+available_genes_human <- rownames(hGlio@assays$RNA)
+chrom_genes_to_test_human   <- unique(unlist(chromatin_complexes_human, use.names = FALSE)[
+  unlist(chromatin_complexes_human, use.names = FALSE) %in% available_genes_human])
+
+# Run FindMarkers per cluster - Human
+markers_list_human <- list()
+for (cluster in levels(Idents(hGlio))) {
+  markers <- tryCatch(
+    FindMarkers(
+      hGlio,
+      ident.1         = cluster,
+      assay           = "RNA",
+      features        = chrom_genes_to_test_human,
+      logfc.threshold = -Inf,
+      min.pct         = 0,
+      test.use        = "wilcox"
+    ),
+    error = function(e) { message("Cluster ", cluster, ": ", e$message); NULL}
+  )
+  if (!is.null(markers) && nrow(markers) > 0) {
+    markers$cluster <- cluster
+    markers$gene    <- rownames(markers)
+    markers_list_human[[cluster]] <- markers
+  }
+}
+chrom_markers_human <- do.call(rbind, markers_list_human)
+rownames(chrom_markers_human) <- NULL
+
+# Filter to genes actually present in RNA assay
+Idents(mGlio) <- "Duy_clusters"
+available_genes_mouse <- rownames(mGlio@assays$RNA)
+chrom_genes_to_test_mouse   <- unique(unlist(chromatin_complexes_mouse, use.names = FALSE)[
+  unlist(chromatin_complexes_mouse, use.names = FALSE) %in% available_genes_mouse])
+
+# Run FindMarkers per cluster - Mouse
+markers_list_mouse <- list()
+for (cluster in levels(Idents(mGlio))) {
+  markers <- tryCatch(
+    FindMarkers(
+      mGlio,
+      ident.1         = cluster,
+      assay           = "RNA",
+      features        = chrom_genes_to_test_mouse,
+      logfc.threshold = -Inf,
+      min.pct         = 0,
+      test.use        = "wilcox"
+    ),
+    error = function(e) NULL
+  )
+  if (!is.null(markers) && nrow(markers) > 0) {
+    markers$cluster <- cluster
+    markers$gene    <- rownames(markers)
+    markers_list_mouse[[cluster]] <- markers
+  }
+}
+chrom_markers_mouse <- do.call(rbind, markers_list_mouse)
+rownames(chrom_markers_mouse) <- NULL
+```
+
+
+
+
+```{r log2FC Filtering}
+
+
+chrom_markers_top_human <- chrom_markers_human %>%
+  filter(p_val_adj < 0.05) %>%
+  group_by(gene) %>%
+  slice_min(p_val_adj, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  arrange(cluster)
+
+
+table(chrom_markers_top_human$cluster)
+
+
+# Set the filter below to TRUE if only looking at top most expressed genes (yet to include in code below)
+
+log2FC_filter <- F
+```
+
+
+```{r common candidates mouse human}
+# Filter to PN and apply threshold
+pn_human <- chrom_markers_human %>% 
+  dplyr::filter(cluster == "PN", avg_log2FC > 0.5, p_val_adj < 0.05)
+
+pn_mouse <- chrom_markers_mouse %>% 
+  dplyr::filter(cluster == "PN", avg_log2FC > 0.5, p_val_adj < 0.05)
+
+# Uppercase mouse genes for matching
+pn_mouse <- pn_mouse %>% mutate(gene = toupper(gene))
+
+# Intersect
+pn_conserved <- intersect(pn_human$gene, pn_mouse$gene)
+
+# Get full details for both species side by side
+conserved_df <- inner_join(
+  dplyr::select(pn_human, gene, avg_log2FC, p_val_adj),
+  dplyr::select(pn_mouse, gene, avg_log2FC, p_val_adj),
+  by = "gene",
+  suffix = c("_human", "_mouse")
+)
+
+conserved_df
+```
+
+```{r}
+pn_human_hist <- hist_markers_human %>% 
+  dplyr::filter(cluster == "PN", avg_log2FC > 0.5, p_val_adj < 0.05)
+
+pn_mouse_hist <- hist_markers_mouse %>% 
+  dplyr::filter(cluster == "PN", avg_log2FC > 0.5, p_val_adj < 0.05)
+
+pn_mouse_hist <- pn_mouse_hist %>% mutate(gene = toupper(gene))
+
+conserved_hist_df <- inner_join(
+  dplyr::select(pn_human_hist, gene, avg_log2FC, p_val_adj),
+  dplyr::select(pn_mouse_hist, gene, avg_log2FC, p_val_adj),
+  by = "gene",
+  suffix = c("_human", "_mouse")
+)
+
+conserved_hist_df
+```
+
+
+
+
+
+
+```{r}
+# Pivot log2FC values into a gene x cluster matrix
+log2fc_mat_hist_human <- hist_markers_human %>%
+  dplyr:: select(gene, cluster, avg_log2FC) %>%
+  pivot_wider(names_from = cluster, values_from = avg_log2FC) %>%
+  column_to_rownames("gene") %>%
+  as.matrix()
+
+# Reorder columns
+log2fc_mat_hist_human <- log2fc_mat_hist_human[, col_order]
+
+# Plot
+png("hGlio_log2FC_hist_human.png", width = 8, height = 16, units = "in", res = 1200)
+pheatmap(
+  log2fc_mat_hist_human,
+  cluster_rows  = TRUE,
+  cluster_cols  = FALSE,
+  color         = colorRampPalette(rev(RColorBrewer::brewer.pal(9, "RdBu")))(100),
+  breaks        = seq(-1, 1, length.out = 101),  # symmetric around 0
+  border_color  = NA,
+  fontsize_row  = 7,
+  fontsize_col  = 11,
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  main          = "Histone Modifiers — log2FC by GBM Subtype (Human)"
+)
+dev.off()
+```
+
+```{r}
+library(dendsort)
+
+# Pivot log2FC values into a gene x cluster matrix
+log2fc_mat_hist_human <- hist_markers_human %>%
+  dplyr::select(gene, cluster, avg_log2FC) %>%
+  pivot_wider(names_from = cluster, values_from = avg_log2FC) %>%
+  column_to_rownames("gene") %>%
+  as.matrix()
+
+# Reorder columns
+log2fc_mat_hist_human <- log2fc_mat_hist_human[, col_order]
+
+# --- handle NAs before clustering ---
+# pivot_wider will introduce NA if a gene wasn't a marker in every cluster's
+# results (common with FindMarkers/FindAllMarkers output). hclust/dist can't
+# handle NAs, so impute to 0 (i.e., "no meaningful change") just for clustering.
+mat_for_clustering <- log2fc_mat_hist_human
+mat_for_clustering[is.na(mat_for_clustering)] <- 0
+
+# --- cluster rows manually, then dendsort ---
+row_dist  <- dist(mat_for_clustering)
+row_clust <- hclust(row_dist, method = "complete")  # pheatmap's default method
+row_clust <- dendsort(row_clust)
+
+# Plot
+png("hGlio_log2FC_hist_human.png", width = 8, height = 16, units = "in", res = 1200)
+pheatmap(
+  log2fc_mat_hist_human,
+  cluster_rows  = row_clust,     # pass the dendsort'ed hclust object instead of TRUE
+  cluster_cols  = FALSE,
+  color         = colorRampPalette(rev(RColorBrewer::brewer.pal(9, "RdBu")))(100),
+  breaks        = seq(-1, 1, length.out = 101),  # symmetric around 0
+  border_color  = NA,
+  fontsize_row  = 7,
+  fontsize_col  = 11,
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  main          = "Histone Modifiers — log2FC by GBM Subtype (Human)",
+  na_col        = "grey85"       # visually flag genes missing log2FC in a cluster
+)
+dev.off()
+```
+
+
+```{r log2FC heatmap hGlio Chrom}
+# Pivot log2FC values into a gene x cluster matrix
+log2fc_mat_chrom_human <- chrom_markers_human %>%
+  dplyr:: select(gene, cluster, avg_log2FC) %>%
+  pivot_wider(names_from = cluster, values_from = avg_log2FC) %>%
+  column_to_rownames("gene") %>%
+  as.matrix()
+
+# Reorder columns
+log2fc_mat_chrom_human <- log2fc_mat_chrom_human[, col_order]
+
+# Plot
+png("hGlio_log2FC_chrom_human.png", width = 8, height = 16, units = "in", res = 1200)
+pheatmap(
+  log2fc_mat_chrom_human,
+  cluster_rows  = TRUE,
+  cluster_cols  = FALSE,
+  color         = colorRampPalette(rev(RColorBrewer::brewer.pal(9, "RdBu")))(100),
+  breaks        = seq(-1, 1, length.out = 101),  # symmetric around 0
+  border_color  = NA,
+  fontsize_row  = 7,
+  fontsize_col  = 11,
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  main          = "Chromatin Remodellers — log2FC by GBM Subtype (Human)"
+)
+dev.off()
+```
+
+```{r}
+library(dendsort)
+
+# Pivot log2FC values into a gene x cluster matrix
+log2fc_mat_chrom_human <- chrom_markers_human %>%
+  dplyr::select(gene, cluster, avg_log2FC) %>%
+  pivot_wider(names_from = cluster, values_from = avg_log2FC) %>%
+  column_to_rownames("gene") %>%
+  as.matrix()
+
+# Reorder columns
+log2fc_mat_chrom_human <- log2fc_mat_chrom_human[, col_order]
+
+# --- check which genes have non-finite values before zeroing them ---
+which(!is.finite(log2fc_mat_chrom_human), arr.ind = TRUE)
+
+# --- handle NA/NaN/Inf before clustering ---
+mat_for_clustering <- log2fc_mat_chrom_human
+mat_for_clustering[!is.finite(mat_for_clustering)] <- 0
+
+# --- cluster rows manually, then dendsort ---
+row_dist  <- dist(mat_for_clustering)
+row_clust <- hclust(row_dist, method = "complete")
+row_clust <- dendsort(row_clust)
+
+# Plot
+png("hGlio_log2FC_chrom_human_row.png", width = 8, height = 16, units = "in", res = 1200)
+pheatmap(
+  log2fc_mat_chrom_human,
+  cluster_rows  = row_clust,
+  cluster_cols  = FALSE,
+  scale = "row",
+  color         = colorRampPalette(rev(RColorBrewer::brewer.pal(9, "RdBu")))(100),
+  breaks        = seq(-1, 1, length.out = 101),  # symmetric around 0
+  border_color  = NA,
+  fontsize_row  = 7,
+  fontsize_col  = 11,
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  main          = "Chromatin Remodellers — log2FC by GBM Subtype (Human)"
+)
+dev.off()
+```
+
+
+
+```{r diag-heatmap-helper}
+library(dplyr); library(tidyr); library(tibble)
+library(pheatmap); library(RColorBrewer)
+
+col_order <- c("PN", "MES", "CL", "MIX")
+
+# Build gene x subtype log2FC matrix from a *_markers_* data frame, order rows
+# diagonally (each gene assigned to its top subtype; weak genes dropped to a
+# flat block at the bottom), and write a png.
+plot_diag_heatmap <- function(markers_df, file, main,
+                              col_order = c("PN", "MES", "CL", "MIX"),
+                              enrich_thresh = 0.5,
+                              breaks_lim = None {
+
+  # pivot to gene x subtype
+  mat <- markers_df %>%
+    dplyr::select(gene, cluster, avg_log2FC) %>%
+    tidyr::pivot_wider(names_from = cluster, values_from = avg_log2FC) %>%
+    tibble::column_to_rownames("gene") %>%
+    as.matrix()
+
+  # fail loudly if subtype labels don't match col_order (the usual silent killer)
+  stopifnot(all(col_order %in% colnames(mat)))
+  mat <- mat[, col_order]
+
+  # diagonal row order
+  row_order_diag <- mat %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("gene") %>%
+    tidyr::pivot_longer(-gene, names_to = "cluster", values_to = "l2fc") %>%
+    dplyr::group_by(gene) %>%
+    dplyr::slice_max(l2fc, n = 1, with_ties = FALSE, na_rm = TRUE) %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate(
+      cluster = ifelse(l2fc > enrich_thresh, cluster, "zzz_flat"),
+      cluster = factor(cluster, levels = c(col_order, "zzz_flat"))
+    ) %>%
+    dplyr::arrange(cluster, dplyr::desc(l2fc)) %>%
+    dplyr::pull(gene)
+
+  png(file, width = 8, height = 16, units = "in", res = 1200)
+  pheatmap(
+    mat[row_order_diag, ],
+    cluster_rows  = FALSE,
+    cluster_cols  = FALSE,
+    scale         = "none",
+    color         = colorRampPalette(rev(RColorBrewer::brewer.pal(9, "RdBu")))(100),
+    breaks        = seq(-breaks_lim, breaks_lim, length.out = 101),
+    border_color  = NA,
+    fontsize_row  = 7, fontsize_col = 11,
+    show_rownames = TRUE, show_colnames = TRUE,
+    main          = main
+  )
+  dev.off()
+
+  invisible(mat)   # return the matrix in case you want it
+}
+```
+
+```{r diag-heatmap-helper data modified breaks}
+
+library(dplyr); library(tidyr); library(tibble)
+library(pheatmap); library(RColorBrewer)
+
+col_order <- c("PN", "MES", "CL", "MIX")
+
+plot_diag_heatmap <- function(markers_df, file, main,
+                              col_order = c("PN", "MES", "CL", "MIX"),
+                              enrich_thresh = 0.5,
+                              cap_quantile = 0.95) {   # <- saturate top/bottom 1%
+
+  mat <- markers_df %>%
+    dplyr::select(gene, cluster, avg_log2FC) %>%
+    tidyr::pivot_wider(names_from = cluster, values_from = avg_log2FC) %>%
+    tibble::column_to_rownames("gene") %>%
+    as.matrix()
+
+  stopifnot(all(col_order %in% colnames(mat)))
+  mat <- mat[, col_order]
+
+  # --- data-driven symmetric cap ---
+  lim  <- quantile(abs(mat), cap_quantile, na.rm = TRUE)
+  brks <- seq(-lim, lim, length.out = 101)
+  message(main, " — cap at 95th pct: ±", round(lim, 2))   
+
+  row_order_diag <- mat %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("gene") %>%
+    tidyr::pivot_longer(-gene, names_to = "cluster", values_to = "l2fc") %>%
+    dplyr::group_by(gene) %>%
+    dplyr::slice_max(l2fc, n = 1, with_ties = FALSE, na_rm = TRUE) %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate(
+      cluster = ifelse(l2fc > enrich_thresh, cluster, "zzz_flat"),
+      cluster = factor(cluster, levels = c(col_order, "zzz_flat"))
+    ) %>%
+    dplyr::arrange(cluster, dplyr::desc(l2fc)) %>%
+    dplyr::pull(gene)
+
+  png(file, width = 8, height = 16, units = "in", res = 1200)
+  pheatmap(
+    mat[row_order_diag, ],
+    cluster_rows  = FALSE,
+    cluster_cols  = FALSE,
+    scale         = "none",
+    color         = colorRampPalette(rev(RColorBrewer::brewer.pal(9, "RdBu")))(100),
+    breaks        = brks,          # <- apply the cap
+    border_color  = NA,
+    fontsize_row  = 7, fontsize_col = 11,
+    show_rownames = TRUE, show_colnames = TRUE,
+    main          = main
+  )
+  dev.off()
+
+  invisible(mat)
+}
+```
+
+
+
+
+```{r diag-heatmaps-all, fig.height=25}
+# --- Human ---
+log2fc_mat_chrom_human <- plot_diag_heatmap(
+  chrom_markers_human,
+  file = "hGlio_log2FC_chrom_human_row_noscale.png",
+  main = "Chromatin Remodellers — log2FC by GBM Subtype (Human)"
+)
+
+log2fc_mat_hist_human <- plot_diag_heatmap(
+  hist_markers_human,
+  file = "hGlio_log2FC_hist_human_row_noscale.png",
+  main = "Histone Modifiers — log2FC by GBM Subtype (Human)"
+)
+
+# --- Mouse ---
+log2fc_mat_chrom_mouse <- plot_diag_heatmap(
+  chrom_markers_mouse,
+  file = "mGlio_log2FC_chrom_mouse_row_noscale.png",
+  main = "Chromatin Remodellers — log2FC by GBM Subtype (Mouse)"
+)
+
+log2fc_mat_hist_mouse <- plot_diag_heatmap(
+  hist_markers_mouse,
+  file = "mGlio_log2FC_hist_mouse_row_noscale.png",
+  main = "Histone Modifiers — log2FC by GBM Subtype (Mouse)"
+)
+```
+
+
+```{r}
+# --- build a p_adj matrix aligned to the log2FC matrix ---
+padj_mat_chrom_human <- chrom_markers_human %>%
+  dplyr::select(gene, cluster, p_val_adj) %>%
+  pivot_wider(names_from = cluster, values_from = p_val_adj) %>%
+  column_to_rownames("gene") %>%
+  as.matrix()
+
+# Force identical row + column order to the log2FC matrix (critical for alignment)
+padj_mat_chrom_human <- padj_mat_chrom_human[
+  rownames(log2fc_mat_chrom_human),
+  colnames(log2fc_mat_chrom_human)
+]
+
+# --- build the asterisk matrix: enriched = padj < 0.05 AND log2FC over your cutoff ---
+logfc_cutoff <- 0.5   # <-- set this to whatever you used in your selection step
+
+sig_matrix <- matrix(
+  "",
+  nrow = nrow(log2fc_mat_chrom_human),
+  ncol = ncol(log2fc_mat_chrom_human),
+  dimnames = dimnames(log2fc_mat_chrom_human)
+)
+
+sig_idx <- padj_mat_chrom_human < 0.05 & log2fc_mat_chrom_human > logfc_cutoff
+sig_idx[is.na(sig_idx)] <- FALSE          # NA/Inf cells never get an asterisk
+sig_matrix[sig_idx] <- "*"
+```
+
+
+
+
+
+########################### 
+
+TF Motif Analysis
+
+```{r}
+library(JASPAR2020)
+library(TFBSTools)
+
+
+# Get all motifs from JASPAR2020
+jaspar_db <- getMatrixSet(JASPAR2020, opts = list(species = "Homo sapiens", all_versions = FALSE))
+
+# Build a lookup table: JASPAR ID -> TF gene name
+motif_lookup <- data.frame(
+  jaspar_id = sapply(jaspar_db, ID),
+  tf_name   = sapply(jaspar_db, name)
+)
+
+head(motif_lookup)
+
+```
+
+
+```{r}
+hist_markers_human %>%
+  dplyr::filter(cluster == "PN", gene %in% c("SIRT4", "NCOA1")) %>%
+  dplyr::select(gene, avg_log2FC, pct.1, pct.2, p_val_adj)
+```
+
+
+```{r}
+# Which of your candidates appear as TFs in JASPAR
+hist_genes_upper <- unlist(histone_modifiers_human, use.names = FALSE)
+
+chromatin_genes_upper <-  unlist(chromatin_complexes_human, use.names = FALSE)
+hist_candidates_with_motifs <- motif_lookup %>% 
+  filter(tf_name %in% hist_genes_upper)
+
+chrom_candidates_with_motifs <- motif_lookup %>% 
+  filter(tf_name %in% chromatin_genes_upper)
+
+
+hist_candidates_with_motifs
+chrom_candidates_with_motifs
+```
+
+
+```{r}
+DefaultAssay(hGlio) <- "chromvar"
+
+# Get the JASPAR IDs for your candidates
+prdm1_id  <- "MA0508.3"
+prdm4_id  <- "MA1647.1"
+clock_id  <- "MA0819.1"
+yy1_id    <- "MA0095.2"
+
+VlnPlot(
+  hGlio,
+  features   = c(prdm1_id, prdm4_id, clock_id, yy1_id),
+  group.by   = "Duy_clusters",
+  pt.size    = 0,
+  ncol       = 2
+)
+```
+
+```{r}
+FeaturePlot(hGlio, features = "MA0508.3", reduction = "wnn.umap")
+```
+
+
+```{r, fig.height = 6, fig.width=15}
+# compute gene activity scores
+DefaultAssay(hGlio) <- "ATAC"
+gene.activities <- GeneActivity(hGlio)
+
+hGlio[["GeneActivity"]] <- CreateAssayObject(counts = gene.activities)
+DefaultAssay(hGlio) <- "GeneActivity"
+hGlio <- NormalizeData(hGlio)
+```
+
+
+
+
+```{r, fig.width= 15, fig.height= 10}
+# all histone modifier candidates
+hist_candidates <- c("KAT2B", "KDM4B", "KDM3B", "NCOA2", "KAT7", 
+                     "CREBBP", "ESCO1", "SIRT2", "SETMAR","KDM5D", "UTY","SMYD2", 
+                     "EP300", "KMT2E", "KDM8", "SIRT6")
+
+chrom_candidates <- c("ARID2", "SMARCA5", "SMARCD1", "ARID1B", 
+                      "MCRS1", "ING3", "MBD2")
+
+# human RNA
+DefaultAssay(hGlio) <- "RNA"
+
+ p1 <- VlnPlot(hGlio, features = hist_candidates, 
+        group.by = "Duy_clusters", 
+        ncol = 4,pt.size = 0)
+
+
+ggsave("Hist_candidates_human_vln.png", plot = p1, width = 15, height = 15, dpi = 300)
+
+
+p2 <-  VlnPlot(hGlio, features = chrom_candidates, 
+        group.by = "Duy_clusters", 
+        ncol = 4, pt.size = 0)
+
+ggsave("Chrom_candidates_human_vln.png", plot = p2, width = 15, height = 15, dpi = 300)
+```
+
+
+
+
+
+```{r,fig.width = 15}
+# mouse RNA
+mouse_hist <- tolower(hist_candidates)
+mouse_hist <- paste0(toupper(substr(mouse_hist, 1, 1)), 
+                     substr(mouse_hist, 2, nchar(mouse_hist)))
+
+mouse_chrom <- tolower(chrom_candidates)
+mouse_chrom <- paste0(toupper(substr(mouse_chrom, 1, 1)), 
+                     substr(mouse_chrom, 2, nchar(mouse_chrom)))
+
+DefaultAssay(mGlio) <- "RNA"
+p3 <-  VlnPlot(mGlio, features = mouse_hist, 
+        group.by = "Duy_clusters", 
+        ncol = 4, pt.size = 0)
+
+ggsave("Hist_candidates_mouse_vln.png", plot = p3, width = 15, height = 15, dpi = 300)
+
+p4 <-  VlnPlot(mGlio, features = mouse_chrom, 
+        group.by = "Duy_clusters", 
+        ncol = 4, pt.size = 0)
+
+
+ggsave("Chrom_candidates_mouse_vln.png", plot = p4, width = 15, height = 15, dpi = 300)
+
+
+```
+
+```{r, fig.width= 15}
+DotPlot(mGlio, features = mouse_hist, 
+        group.by = "Duy_clusters")
+```
+
+```{r}
+# find PN-specific ATAC peaks
+DefaultAssay(hGlio) <- "ATAC"
+PN_peaks <- FindMarkers(hGlio,
+                        ident.1 = "PN",
+                        group.by = "Duy_clusters",
+                        only.pos = TRUE,
+                        min.pct = 0.05,
+                        test.use = "LR",
+                        latent.vars = "nCount_ATAC")
+
+# get peak names
+PN_peak_names <- rownames(PN_peaks)
+
+# run motif enrichment on PN-specific peaks
+enriched_motifs <- FindMotifs(hGlio,
+                              features = PN_peak_names)
+
+head(enriched_motifs, 20)
+```
+
+```{r}
+DimPlot(hGlio, reduction = "wnn.umap")
+```
+
+```{r}
+# Human GBM - hGlio
+hGlio_Markers <- list(
+  PN  = c("SOX10", "ERBB3", "MYT1", "GPR17", "CA10"),
+  MES = c("TGFBI", "COL5A1", "ADAMTS2", "ITGA4", "IGFBP3"),
+  CL  = c("EGFR", "ELOVL2", "ROBO2", "BMPR1B", "SPRY2")
+)
+
+hGlio <- AddModuleScore(
+  object   = hGlio,
+  features = hGlio_Markers,
+  assay    = "RNA",
+  name     = "Subtype_Score",
+  ctrl     = 50,
+  seed     = 42
+)
+
+# Rename for clarity (Seurat appends 1, 2, 3)
+hGlio$PN_Score  <- hGlio$Subtype_Score1
+hGlio$MES_Score <- hGlio$Subtype_Score2
+hGlio$CL_Score  <- hGlio$Subtype_Score3
+
+# Clean up intermediate columns
+hGlio$Subtype_Score1 <- NULL
+hGlio$Subtype_Score2 <- NULL
+hGlio$Subtype_Score3 <- NULL
+
+
+# Mouse GBM - mGlio
+mGlio_Markers <- list(
+  PN  = c("Sox10", "Erbb3", "Myt1", "Gpr17", "Slc1a1"),
+  MES = c("Tgfbi", "Col5a1", "Adamts2", "Itga4", "Igfbp3"),
+  CL  = c("Egfr", "Elovl2", "Robo2", "Bmpr1b", "Slc7a11")
+)
+
+mGlio <- AddModuleScore(
+  object   = mGlio,
+  features = mGlio_Markers,
+  assay    = "RNA",
+  name     = "Subtype_Score",
+  ctrl     = 50,
+  seed     = 42
+)
+
+mGlio$PN_Score  <- mGlio$Subtype_Score1
+mGlio$MES_Score <- mGlio$Subtype_Score2
+mGlio$CL_Score  <- mGlio$Subtype_Score3
+
+mGlio$Subtype_Score1 <- NULL
+mGlio$Subtype_Score2 <- NULL
+mGlio$Subtype_Score3 <- NULL
+```
+
+
+
+```{r, fig.height= 3, fig.width= 9}
+library(ggplot2)
+library(patchwork)
+library(grid)
+
+clean_feature <- function(p) {
+  p +
+    theme(
+      legend.position = "none",
+      axis.title      = element_blank(),
+      axis.text       = element_blank(),
+      axis.ticks      = element_blank(),
+      axis.line       = element_blank()
+    ) +
+    annotation_custom(
+      grob = segmentsGrob(
+        x0 = unit(0.05, "npc"), x1 = unit(0.15, "npc"),  # horizontal arrow
+        y0 = unit(0.05, "npc"), y1 = unit(0.05, "npc"),
+        arrow = arrow(length = unit(0.15, "cm"), type = "closed"),
+        gp = gpar(lwd = 2, col = "black", fill = "black")
+      )
+    ) +
+    annotation_custom(
+      grob = segmentsGrob(
+        x0 = unit(0.05, "npc"), x1 = unit(0.05, "npc"),  # vertical arrow
+        y0 = unit(0.05, "npc"), y1 = unit(0.15, "npc"),
+        arrow = arrow(length = unit(0.15, "cm"), type = "closed"),
+        gp = gpar(lwd = 2, col = "black", fill = "black")
+      )
+    ) +
+    annotation_custom(
+      grob = textGrob(
+        "UMAP1", x = unit(0.10, "npc"), y = unit(0.02, "npc"),
+        gp = gpar(fontsize = 5, col = "black")
+      )
+    ) +
+    annotation_custom(
+      grob = textGrob(
+        "UMAP2", x = unit(0.02, "npc"), y = unit(0.10, "npc"),
+        rot = 90, gp = gpar(fontsize = 5, col = "black")
+      )
+    )
+}
+
+# Human
+p1 <- clean_feature(FeaturePlot(hGlio, features = "PN_Score",  reduction = "wnn.umap") + scale_color_viridis_c(option = "magma") + ggtitle("hGlio - PN Score"))
+p2 <- clean_feature(FeaturePlot(hGlio, features = "MES_Score", reduction = "wnn.umap") + scale_color_viridis_c(option = "magma") + ggtitle("hGlio - MES Score"))
+p3 <- clean_feature(FeaturePlot(hGlio, features = "CL_Score",  reduction = "wnn.umap") + scale_color_viridis_c(option = "magma") + ggtitle("hGlio - CL Score"))
+
+(p1 | p2 | p3)
+
+# Mouse
+p4 <- clean_feature(FeaturePlot(mGlio, features = "PN_Score",  reduction = "wnn.umap") + scale_color_viridis_c(option = "magma") + ggtitle("mGlio - PN Score"))
+p5 <- clean_feature(FeaturePlot(mGlio, features = "MES_Score", reduction = "wnn.umap") + scale_color_viridis_c(option = "magma") + ggtitle("mGlio - MES Score"))
+p6 <- clean_feature(FeaturePlot(mGlio, features = "CL_Score",  reduction = "wnn.umap") + scale_color_viridis_c(option = "magma") + ggtitle("mGlio - CL Score"))
+
+(p4 | p5 | p6)
+```
+
+```{r, fig.height=4, fig.width=5}
+p1 <-  DimPlot(mGlio, reduction = "wnn.umap") + NoLegend() + NoAxes()
+
+ggsave(filename = "dimplot_mGlio_withoutaxes&legend.png",plot = p1, dpi = 300)
+```
+
+```{r rank concordance}
+library(dplyr)
+library(ggplot2)
+library(ggrepel)   # install.packages("ggrepel") if you don't have it
+
+# ---- 1. Build the cross-species table for one arm (PN-vs-rest logFC) ----
+# arg is `clust` not `cluster` to avoid colliding with the column name
+build_concordance <- function(human_tbl, mouse_tbl, clust = "PN") {
+  h <- human_tbl %>%
+    dplyr::filter(cluster == clust) %>%
+    dplyr::transmute(gene = toupper(gene),
+                     lfc_human  = avg_log2FC,
+                     pct1_human = pct.1, pct2_human = pct.2,
+                     padj_human = p_val_adj)
+  m <- mouse_tbl %>%
+    dplyr::filter(cluster == clust) %>%
+    dplyr::transmute(gene = toupper(gene),          # Smarcc1 -> SMARCC1
+                     lfc_mouse  = avg_log2FC,
+                     pct1_mouse = pct.1, pct2_mouse = pct.2,
+                     padj_mouse = p_val_adj)
+  dplyr::inner_join(h, m, by = "gene") %>%
+    dplyr::filter(is.finite(lfc_human), is.finite(lfc_mouse))
+}
+
+# ---- 2. Correlation runner (Spearman + Kendall, optional gene exclusion) ----
+run_concordance <- function(df, exclude = character(0), label = "") {
+  d  <- dplyr::filter(df, !(gene %in% exclude))
+  sp <- suppressWarnings(cor.test(d$lfc_human, d$lfc_mouse, method = "spearman"))
+  kn <- suppressWarnings(cor.test(d$lfc_human, d$lfc_mouse, method = "kendall"))
+  data.frame(set = label, n_genes = nrow(d),
+             spearman_rho = unname(sp$estimate), spearman_p = sp$p.value,
+             kendall_tau  = unname(kn$estimate),  kendall_p  = kn$p.value)
+}
+
+# ---- 3. Build both arms ----
+conc_chrom <- build_concordance(chrom_markers_human, chrom_markers_mouse, "PN")
+conc_hist  <- build_concordance(hist_markers_human,  hist_markers_mouse,  "PN")
+
+sex_artefacts <- c("UTY", "KDM5D")   # Y-linked present-in-one-group artefacts (§6)
+
+results <- dplyr::bind_rows(
+  run_concordance(conc_chrom, label = "Remodellers (PN)"),
+  run_concordance(conc_hist,  label = "Histone (PN, all genes)"),
+  run_concordance(conc_hist, exclude = sex_artefacts,
+                  label = "Histone (PN, sex-linked removed)")
+)
+print(results)
+
+# sanity: row counts should be ~class size (remodellers ~65-70, histone ~110-120)
+cat("remodeller orthologs:", nrow(conc_chrom),
+    " | histone orthologs:", nrow(conc_hist), "\n")
+
+# ---- 4. Scatter (the figure — the point cloud IS the negative) ----
+plot_concordance <- function(df, highlight, title, rho, tau) {
+  df  <- dplyr::mutate(df, is_hl = gene %in% highlight)
+  lim <- max(abs(c(df$lfc_human, df$lfc_mouse)), na.rm = TRUE)
+  ggplot(df, aes(lfc_human, lfc_mouse)) +
+    geom_hline(yintercept = 0, colour = "grey80", linewidth = 0.3) +
+    geom_vline(xintercept = 0, colour = "grey80", linewidth = 0.3) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed",
+                colour = "grey70", linewidth = 0.3) +
+    geom_point(data = subset(df, !is_hl), colour = "grey65",
+               size = 1.3, alpha = 0.7) +
+    geom_point(data = subset(df,  is_hl), colour = "#B2182B", size = 2) +
+    ggrepel::geom_text_repel(data = subset(df, is_hl), aes(label = gene),
+                             size = 3, max.overlaps = Inf,
+                             min.segment.length = 0, segment.size = 0.3) +
+    coord_equal(xlim = c(-lim, lim), ylim = c(-lim, lim)) +
+    labs(x = "Human PN log2FC (PN vs rest)",
+         y = "Mouse PN log2FC (PN vs rest)",
+         title = title,
+         subtitle = sprintf("Spearman \u03c1 = %.2f   Kendall \u03c4 = %.2f", rho, tau)) +
+    theme_bw(base_size = 11) +
+    theme(panel.grid.minor = element_blank())
+}
+
+baf_hl  <- c("SMARCC1","SMARCC2","ARID1B","ARID2","SMARCA4","SMARCA2","SMARCD3","DPF1")
+hist_hl <- c("EZH2","UTY","KDM5D","NCOA2","PRDM16")
+
+r_chrom      <- run_concordance(conc_chrom)
+r_hist_clean <- run_concordance(conc_hist)  # meaningful ρ/τ
+
+p_chrom <- plot_concordance(conc_chrom, baf_hl,
+             "Chromatin remodellers \u2014 cross-species PN specificity",
+             r_chrom$spearman_rho, r_chrom$kendall_tau)
+
+# histone subtitle uses the sex-removed value; the two artefact points stay
+# labelled on the plot so the reader SEES why they were excluded
+p_hist <- plot_concordance(conc_hist, hist_hl,
+            "Histone modifiers \u2014 cross-species PN specificity",
+            r_hist_clean$spearman_rho, r_hist_clean$kendall_tau)
+
+
+p_chrom; p_hist
+```
+
+
+
+```{r}
+library(dplyr); library(ggplot2); library(ggrepel)
+
+# --- membership sets straight from YOUR filtered tables (uppercased) ---
+# histone
+h_pass_H <- toupper(pn_human_hist$gene)
+h_pass_M <- toupper(pn_mouse_hist$gene)
+# remodeller
+c_pass_H <- toupper(pn_human$gene)
+c_pass_M <- toupper(pn_mouse$gene)
+
+classify <- function(df, passH, passM) {
+  df %>% mutate(
+    grp = dplyr::case_when(
+      gene %in% passH & gene %in% passM ~ "Both",
+      gene %in% passH                   ~ "Human",
+      gene %in% passM                   ~ "Mouse",
+      TRUE                              ~ "ns"),
+    grp = factor(grp, levels = c("ns","Human","Mouse","Both")))
+}
+
+conc_hist  <- classify(conc_hist,  h_pass_H, h_pass_M)
+conc_chrom <- classify(conc_chrom, c_pass_H, c_pass_M)
+
+grp_cols <- c(ns = "grey70", Human = "#B2182B", Mouse = "#2166AC", Both = "#8E44AD")
+
+
+
+p_hist  <- plot_conc(conc_hist,  "Histone modifiers \u2014 cross-species PN specificity",  -0.03, -0.03) + theme(legend.position = "none") + labs(title = NULL, subtitle = NULL)
+# recompute chrom rho/tau or reuse your run_concordance() output
+rc <- run_concordance(conc_chrom)
+p_chrom <- plot_conc(conc_chrom, "Chromatin remodellers \u2014 cross-species PN specificity",
+                     rc$spearman_rho, rc$kendall_tau)  + theme(legend.position = "none") + labs(title = NULL, subtitle = NULL)
+
+
+```
+
+```{r plotting rank concordance function}
+
+plot_conc <- function(df, title, rho, tau,
+                      xlim = NULL, ylim = NULL,   # hard limits; NULL = auto
+                      crop_q = 1,                 # e.g. 0.99 to auto-trim tails
+                      keep_labels_outside = FALSE) {
+
+  # --- decide limits ---
+  auto_lim <- function(v) {
+    m <- stats::quantile(abs(v), crop_q, na.rm = TRUE)  # crop_q=1 -> full range
+    c(-m, m)
+  }
+  if (is.null(xlim)) xlim <- auto_lim(df$lfc_human)
+  if (is.null(ylim)) ylim <- auto_lim(df$lfc_mouse)
+
+  lab <- dplyr::filter(df, grp != "ns")
+  if (!keep_labels_outside) {                     # don't label points off-panel
+    lab <- dplyr::filter(lab,
+      lfc_human >= xlim[1], lfc_human <= xlim[2],
+      lfc_mouse >= ylim[1], lfc_mouse <= ylim[2])
+  }
+
+  ggplot(df, aes(lfc_human, lfc_mouse)) +
+    geom_hline(yintercept = 0, colour = "grey85", linewidth = 0.3) +
+    geom_vline(xintercept = 0, colour = "grey85", linewidth = 0.3) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed",
+                colour = "grey75", linewidth = 0.3) +
+    geom_point(data = subset(df, grp == "ns"), colour = "grey70",
+               size = 1.3, alpha = 0.6) +
+    geom_point(data = subset(df, grp != "ns"), aes(colour = grp), size = 2.2) +
+    ggrepel::geom_text_repel(data = lab, aes(label = gene, colour = grp),
+                             size = 3, show.legend = FALSE,
+                             max.overlaps = Inf, min.segment.length = 0,
+                             segment.size = 0.3) +
+    scale_colour_manual(values = grp_cols, breaks = c("Human","Mouse","Both"),
+                        labels = c("Human only","Mouse only","Both species"),
+                        name = "Passes logFC>0.5\n& adj-p<0.05 in") +
+    coord_equal(xlim = xlim, ylim = ylim) +       # clips view, keeps all data
+    labs(x = "Human PN log2FC (PN vs rest)",
+         y = "Mouse PN log2FC (PN vs rest)", title = title,
+         subtitle = sprintf("Spearman \u03c1 = %.2f   Kendall \u03c4 = %.2f", rho, tau)) +
+    theme_bw(base_size = 11) + theme(panel.grid.minor = element_blank())
+}
+```
+
+```{r plotting rank concordance function better labelling}
+plot_conc <- function(df, title, rho, tau, lim = 2, push = 0.85) {
+
+  lab <- dplyr::filter(df, grp != "ns") %>%
+    dplyr::mutate(
+      off = abs(lfc_human) > lim | abs(lfc_mouse) > lim,   # outside the window?
+      # clamp the *label anchor* to the frame, annotate real value if off-scale
+      ax  = pmax(pmin(lfc_human, lim), -lim),
+      ay  = pmax(pmin(lfc_mouse, lim), -lim),
+      lab = ifelse(off,
+                   sprintf("%s (%.1f, %.1f)", gene, lfc_human, lfc_mouse),
+                   gene)
+    )
+
+  ggplot(df, aes(lfc_human, lfc_mouse)) +
+    geom_hline(yintercept = 0, colour = "grey85", linewidth = 0.3) +
+    geom_vline(xintercept = 0, colour = "grey85", linewidth = 0.3) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed",
+                colour = "grey75", linewidth = 0.3) +
+    geom_point(data = subset(df, grp == "ns"), colour = "grey70",
+               size = 0.8, alpha = 0.6) +
+    geom_point(data = subset(df, grp != "ns"), aes(colour = grp), size = 2.2) +
+    # triangles at the edge for the off-scale points
+    geom_point(data = subset(lab, off), aes(ax, ay, colour = grp),
+               shape = 17, size = 2.6) +
+    ggrepel::geom_text_repel(
+      data = lab, aes(ax, ay, label = lab, colour = grp),
+      size = 5, show.legend = FALSE,
+      force = 3, force_pull = 0.2, box.padding = 0.6,
+      max.overlaps = Inf, min.segment.length = 0.5,
+      segment.size = 0.2, segment.alpha = 0.4,
+      seed = 42
+    ) +
+    scale_colour_manual(values = grp_cols, breaks = c("Human","Mouse","Both"),
+                        labels = c("Human only","Mouse only","Both species"),
+                        name = "Passes logFC>0.5\n& adj-p<0.05 in") +
+    coord_equal(xlim = c(-lim, lim), ylim = c(-lim, lim), clip = "off") +
+    labs(x = "Human PN log2FC (PN vs rest)",
+         y = "Mouse PN log2FC (PN vs rest)", title = title,
+         subtitle = sprintf("Spearman \u03c1 = %.2f   Kendall \u03c4 = %.2f", rho, tau)) +
+    theme_bw(base_size = 11) + theme(panel.grid.minor = element_blank())
+}
+```
+
+
+```{r}
+# histone: tight symmetric window at, say, ±3
+p_hist <- plot_conc(conc_hist, "Histone modifiers ...", -0.03, -0.03) +
+          theme(legend.position = "none") + labs(title = NULL, subtitle = NULL)
+
+# remodellers: let it auto-trim the top 1% tail instead of hard numbers
+p_chrom <- plot_conc(conc_chrom, "Chromatin remodellers ...",
+                     rc$spearman_rho, rc$kendall_tau) +
+           theme(legend.position = "none") + labs(title = NULL, subtitle = NULL)
+p_chrom
+p_hist
+```
+
+
+
+
+```{r saving concordance function plolts}
+ggsave("concordance_remodellers_PN_v4.png", p_chrom, dpi = 300,
+       width = 7, height = 7, units = "in")
+ggsave("concordance_histone_PN_v4.png",     p_hist,  dpi = 300,
+       width = 7, height = 7, units = "in")
+
+```
+
+
+
+```{r,fig.width =10}
+DotPlot(hGlio, features = c("NCOA2","UTY","KDM5D","SMARCC1","SMARCD3","DPF1","ARID2","BAZ1A","SMARCA4"), assay = "RNA") + 
+  coord_flip() + 
+  scale_color_gradientn(colors = rev(viridis::inferno(100)))
+```
+
+```{r}
+dp_human_pass_thres <- DotPlot(hGlio, features = c("EZH2", "UTY", "KMT2C", "NCOA1", "NCOA2", "KAT2B", "KDM5D", "KMT5A", "KDM4B", "KDM1A", "ESCO1", "HDAC4",
+                             "ARID2", "SMARCC1", "BAZ1A", "SMARCA4", "SMARCD3", "DPF1"), 
+        assay = "RNA", scale = FALSE) + 
+  coord_flip() + 
+  scale_color_gradientn(colors = viridis::inferno(100))
+```
+
+```{r}
+dp_mouse_pass_thres <- DotPlot(mGlio, features = c("Smarca2",
+                             "Hdac9", "Uty", "Ncoa2", "Kdm6a", "Kdm4c", "Hdac8", 
+                             "Kdm5d", "Taf1", "Phf8", "Suv39h1"), 
+        assay = "RNA", scale = FALSE) + 
+  coord_flip() + 
+  scale_color_gradientn(colors = viridis::inferno(100))
+```
+
+```{r}
+ggsave("dotplot_human_passed.png",plot = dp_human_pass_thres, dpi = 300, width = 5.5, height = 5.5, units = "in")
+
+ggsave("dotplot_mouse_passed.png", plot = dp_mouse_pass_thres, dpi = 300, width = 5.5, height = 5.5, units = "in")
+```
+
+
+
+
+```{r resolution plot with cluster separation }
+library(ggsci)
+DefaultAssay(hGlio) <- "RNA"          # or whatever space you want the tree built in
+Idents(hGlio)      <- "wsnn_res.0.1"    # the 17-cluster resolution
+hGlio <- BuildClusterTree(hGlio, dims = 1:30)   # averages per-cluster coords, builds tree
+PlotClusterTree(hGlio)  
+res0.1_umap_hGlio <- DimPlot(hGlio, reduction = "wnn.umap", group.by = "wsnn_res.0.1", cols = brewer.pal(9, "Set1")[c(6, 7, 8, 9)]   )# ape::plot.phylo + nodelabels()
+```
+
+```{r}
+
+DefaultAssay(mGlio) <- "RNA"          # or whatever space you want the tree built in
+Idents(mGlio)      <- "wsnn_res.0.1"    # the 17-cluster resolution
+mGlio <- BuildClusterTree(mGlio, dims = 1:30)   # averages per-cluster coords, builds tree
+PlotClusterTree(mGlio)  
+res0.1_umap_mGlio <- DimPlot(mGlio, reduction = "wnn.umap", group.by = "wsnn_res.0.1", cols = brewer.pal(8, "Accent")[c(2,3,4, 6, 7, 8)] )# ape::plot.phylo + nodelabels()
+```
+
+
+```{r}
+ggsave("umap_human_res0.1.png", plot = res0.1_umap_hGlio, dpi = 300,
+       width = 5, height = 5, units = "in")
+ggsave("umap_mouse_res0.1.png", plot = res0.1_umap_mGlio, dpi = 300,
+       width = 5, height = 5, units = "in")
+```
+
+```{r}
+DefaultAssay(hGlio) <- "RNA"
+Idents(hGlio)      <- "wsnn_res.0.1"
+
+markers <- FindAllMarkers(
+  hGlio,
+  only.pos        = TRUE,        # you want up-genes to characterise each cluster
+  min.pct         = 0.25,
+  logfc.threshold = 0.25,
+  test.use        = "wilcox"     # default; fine
+)
+
+library(dplyr)
+top50 <- markers %>%
+  filter(p_val_adj < 0.05) %>%           # gate before ranking, not after
+  group_by(cluster) %>%
+  slice_max(order_by = avg_log2FC, n = 50) %>%
+  ungroup()
+```
+```{r}
+## ---- Human ----
+res <- "wsnn_res.0.1"
+stopifnot("pca" %in% Reductions(hGlio), res %in% colnames(hGlio@meta.data))
+stopifnot(ncol(hGlio[["pca"]]) >= 50)          # dims=1:50 needs 50 PCs present
+
+DefaultAssay(hGlio) <- "RNA"
+Idents(hGlio)       <- res
+message("hGlio ", res, ": ", nlevels(Idents(hGlio)), " clusters")
+
+hGlio <- BuildClusterTree(hGlio, dims = 1:50)
+
+png("hGlio_cluster_tree_res0.1.png", width = 6.7, height = 5, units = "in", res = 300)
+PlotClusterTree(hGlio)
+dev.off()
+```
+
+```{r}
+## ---- Mouse ----
+res <- "wsnn_res.0.1"
+stopifnot("pca" %in% Reductions(mGlio), res %in% colnames(mGlio@meta.data))
+stopifnot(ncol(mGlio[["pca"]]) >= 50)
+
+DefaultAssay(mGlio) <- "RNA"
+Idents(mGlio)       <- res
+message("mGlio ", res, ": ", nlevels(Idents(mGlio)), " clusters")
+
+mGlio <- BuildClusterTree(mGlio, dims = 1:50)
+
+png("mGlio_cluster_tree_res0.1.png", width = 6.7, height = 5, units = "in", res = 300)
+PlotClusterTree(mGlio)
+dev.off()
+```
+
+```{r screening figure plots for EZH2, BAF155, BAF170}
+# --- hGlio (human, uppercase gene names) ---
+FeaturePlot(hGlio, reduction = "wnn.umap", features = "EZH2", pt.size = 1) + NoAxes() + scale_colour_viridis_c(option = "inferno")
+ggsave("featureplot_hGlio_EZH2_v2.png",
+       dpi = 300,
+       width = 5, height = 5, units = "in")
+
+FeaturePlot(hGlio, reduction = "wnn.umap", features = "SMARCC1") + NoAxes()
+ggsave("featureplot_hGlio_BAF155.png",
+       dpi = 300,
+       width = 5, height = 5, units = "in")
+
+FeaturePlot(hGlio, reduction = "wnn.umap", features = "SMARCC2") + NoAxes()
+ggsave("featureplot_hGlio_BAF170.png",
+       dpi = 300,
+       width = 5, height = 5, units = "in")
+
+# --- mGlio (mouse, sentence case gene names) ---
+FeaturePlot(mGlio, reduction = "wnn.umap", features = "Ezh2") + NoAxes()
+ggsave("featureplot_mGlio_Ezh2.png",
+       dpi = 300,
+       width = 5, height = 5, units = "in")
+
+FeaturePlot(mGlio, reduction = "wnn.umap", features = "Smarcc1") + NoAxes()
+ggsave("featureplot_mGlio_Baf155.png",
+       dpi = 300,
+       width = 5, height = 5, units = "in")
+
+FeaturePlot(mGlio, reduction = "wnn.umap", features = "Smarcc2") + NoAxes()
+ggsave("featureplot_mGlio_Baf170.png",
+       dpi = 300,
+       width = 5, height = 5, units = "in")
+
+```
+
+```{r}
+FeaturePlot(hGlio, reduction = "wnn.umap", features = "EZH2", pt.size = 1, order = TRUE) + NoAxes() + scale_colour_viridis_c(option = "inferno")
+ggsave("featureplot_hGlio_EZH2_v2.png",
+       dpi = 300,
+       width = 5, height = 5, units = "in")
+
+FeaturePlot(hGlio, reduction = "wnn.umap", features = "SMARCC1", pt.size = 1, order = TRUE) + NoAxes() + scale_colour_viridis_c(option = "inferno")
+ggsave("featureplot_hGlio_BAF155_v2.png",
+       dpi = 300,
+       width = 5, height = 5, units = "in")
+
+FeaturePlot(hGlio, reduction = "wnn.umap", features = "SMARCC2", pt.size = 1, order = TRUE) + NoAxes() + scale_colour_viridis_c(option = "inferno")
+ggsave("featureplot_hGlio_BAF170_v2.png",
+       dpi = 300,
+       width = 5, height = 5, units = "in")
+
+# --- mGlio (mouse, sentence case gene names) ---
+FeaturePlot(mGlio, reduction = "wnn.umap", features = "Ezh2", pt.size = 1, order = TRUE) + NoAxes() + scale_colour_viridis_c(option = "inferno")
+ggsave("featureplot_mGlio_Ezh2_v2.png",
+       dpi = 300,
+       width = 5, height = 5, units = "in")
+
+FeaturePlot(mGlio, reduction = "wnn.umap", features = "Smarcc1", pt.size = 1, order = TRUE) + NoAxes() + scale_colour_viridis_c(option = "inferno")
+ggsave("featureplot_mGlio_Baf155_v2.png",
+       dpi = 300,
+       width = 5, height = 5, units = "in")
+
+FeaturePlot(mGlio, reduction = "wnn.umap", features = "Smarcc2", pt.size = 1, order = TRUE) + NoAxes() + scale_colour_viridis_c(option = "inferno")
+ggsave("featureplot_mGlio_Baf170_v2.png",
+       dpi = 300,
+       width = 5, height = 5, units = "in")
+```
+
+
+```{r}
+# ---- Passing-hit FeaturePlots (supplement) --------------------------------
+# Hits: PN, logFC > 0.5, adj-p < 0.05 (context doc §16)
+
+hHits <- c(
+  "KMT2C","KMT5A","EZH2",                       # HMTs
+  "KDM1A","KDM4B","KDM5D","UTY",                # HDMs
+  "NCOA1","NCOA2","KAT2B","ESCO1",              # HATs
+  "HDAC4",                                      # HDACs
+  "ARID2","SMARCC1","SMARCA4","SMARCD3","DPF1", # BAF
+  "BAZ1A"                                       # ISWI
+)  # 18
+
+mHits <- c(
+  "Suv39h1",                                    # HMT
+  "Kdm6a","Kdm4c","Phf8","Uty","Kdm5d",         # HDMs
+  "Ncoa2","Taf1",                               # HATs
+  "Hdac9","Hdac8",                              # HDACs
+  "Smarca2"                                     # remodeller
+)  # 11
+
+plot_hit_features <- function(obj, genes, assay = "RNA",
+                              reduction = "wnn.umap",
+                              ncol = 5, pt.size = 0.4) {
+  DefaultAssay(obj) <- assay
+  present <- intersect(genes, rownames(obj))
+  missing <- setdiff(genes, rownames(obj))
+  if (length(missing))
+    message("Not found, skipped: ", paste(missing, collapse = ", "))
+
+  plots <- lapply(present, function(g) {
+    FeaturePlot(obj, features = g, reduction = reduction, order = TRUE,
+                pt.size = pt.size, raster = FALSE) +
+      scale_colour_viridis_c(option = "inferno") +
+      ggtitle(g) +
+      NoAxes() +
+      theme(plot.title = element_text(face = "italic", size = 10),
+            legend.key.height = unit(0.3, "cm"),
+            legend.key.width  = unit(0.2, "cm"),
+            legend.text = element_text(size = 6))
+  })
+  wrap_plots(plots, ncol = ncol)
+}
+
+p_h <- plot_hit_features(hGlio, hHits, ncol = 5)
+ggsave(paste0(plot_save, "SuppFig_hGlio_hit_featureplots.png"),
+       p_h, width = 5 * 2.3, height = ceiling(length(hHits)/5) * 2.3,
+       dpi = 300, bg = "white")
+
+p_m <- plot_hit_features(mGlio, mHits, ncol = 4)
+ggsave(paste0(plot_save, "SuppFig_mGlio_hit_featureplots.png"),
+       p_m, width = 4 * 2.3, height = ceiling(length(mHits)/4) * 2.3,
+       dpi = 300, bg = "white")
+```
+```{r feature with dimplot ref}
+ref_dim <- function(obj, reduction = "wnn.umap",
+                    group.by = "Duy_clusters", pt.size = 0.4) {
+  DimPlot(obj, reduction = reduction, group.by = group.by,
+          label = TRUE, repel = TRUE, pt.size = pt.size, raster = FALSE) +
+    ggtitle("Clusters (Duy)") +
+    theme(plot.title = element_text(size = 10),
+          axis.title = element_blank(), axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          legend.text = element_text(size = 6),
+          legend.key.height = unit(0.3, "cm"))
+}
+
+# Human: reference on its own row, grid below
+d_h <- ref_dim(hGlio)
+g_h <- plot_hit_features(hGlio, hHits, ncol = 5)
+p_h <- d_h / g_h + plot_layout(heights = c(1, ceiling(length(hHits)/5)))
+
+ggsave(paste0(plot_save, "SuppFig_hGlio_hit_featureplots_with_ref.png"),
+       p_h, width = 5 * 2.3,
+       height = (1 + ceiling(length(hHits)/5)) * 2.3,
+       dpi = 300, bg = "white")
+
+d_m <- ref_dim(mGlio)
+g_m <- plot_hit_features(mGlio, mHits, ncol = 4)
+p_m <- d_m / g_m + plot_layout(heights = c(1, ceiling(length(mHits)/4)))
+
+ggsave(paste0(plot_save, "SuppFig_mGlio_hit_featureplots_with_ref.png"),
+       p_m, width = 4 * 2.3,
+       height = (1 + ceiling(length(mHits)/4)) * 2.3,
+       dpi = 300, bg = "white")
+```
+
+
+
+```{r}
+gene1    <- "SMARCC1"
+gene2    <- "EZH2"
+my_clust <- "PN"          # whatever your cluster label/number is
+
+# pull both genes' expression (cells x genes data frame)
+expr <- FetchData(hGlio, vars = c(gene1, gene2), slot = "counts")
+
+# grab the cluster identity for each cell
+clust <- hGlio$Duy_clusters         # or seurat_obj$seurat_clusters
+
+# build the combined mask
+mask <- expr[[gene2]] > 0
+
+sum(mask)
+```
+
+```{r, fig.height= 23, fig.width= 8}
+DotPlot(hGlio, features = HMTs, group.by = "Duy_clusters") + coord_flip() +
+  scale_color_gradientn(colors = viridis::inferno(100)) 
+```
+
+```{r dotplot_helper}
+plotPath <- paste0(projPath, "dotplots/")
+dir.create(plotPath, showWarnings = FALSE, recursive = TRUE)
+
+plot_dot <- function(obj, features, title = NULL, file = NULL,
+                     height = 8, width = 8, group = "Duy_clusters") {
+  present <- features[features %in% rownames(obj)]
+  missing <- setdiff(features, present)
+  if (length(missing) > 0) message(title, " — not found: ", paste(missing, collapse = ", "))
+  p <- DotPlot(obj, features = present, group.by = group) +
+    coord_flip() +
+    scale_color_gradientn(colors = viridis::inferno(100))
+  if (!is.null(title)) p <- p + ggtitle(title)
+  if (!is.null(file)) ggsave(paste0(plotPath, file), p, height = height, width = width, dpi = 300, limitsize = FALSE)
+  p
+}
+```
+
+```{r dot_h_HMTs, fig.height=23, fig.width=8}
+plot_dot(hGlio, HMTs, "Human — HMTs", "human_HMTs.pdf", height = 23, width = 8)
+```
+
+```{r dot_h_HDMs, fig.height=12, fig.width=8}
+plot_dot(hGlio, HDMs, "Human — HDMs", "human_HDMs.pdf", height = 12, width = 8)
+```
+
+```{r dot_h_HATs, fig.height=10, fig.width=8}
+plot_dot(hGlio, HATs, "Human — HATs", "human_HATs.pdf", height = 10, width = 8)
+```
+
+```{r dot_h_HDACs, fig.height=10, fig.width=8}
+plot_dot(hGlio, HDACs, "Human — HDACs", "human_HDACs.pdf", height = 10, width = 8)
+```
+
+```{r dot_combined_h_histone, fig.height=50, fig.width=8}
+plot_dot(hGlio, genes_to_test_human, "Human — all histone modifiers", "human_all_histone.pdf", height = 50, width = 8)
+```
+
+```{r dot_combined_m_histone, fig.height=50, fig.width=8}
+plot_dot(mGlio, genes_to_test_mouse, "Mouse — all histone modifiers", "mouse_all_histone.pdf", height = 50, width = 8)
+```
+
+```{r dot_combined_h_chrom, fig.height=34, fig.width=8}
+plot_dot(hGlio, chrom_genes_to_test_human, "Human — all chromatin remodellers", "human_all_chrom.pdf", height = 34, width = 8)
+```
+
+```{r dot_combined_m_chrom, fig.height=34, fig.width=8}
+plot_dot(mGlio, chrom_genes_to_test_mouse, "Mouse — all chromatin remodellers", "mouse_all_chrom.pdf", height = 34, width = 8)
+```

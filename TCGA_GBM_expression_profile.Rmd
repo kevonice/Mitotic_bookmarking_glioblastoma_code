@@ -1,0 +1,372 @@
+---
+title: "2025-12-16_TCGA_GBM_expression_profile"
+author: "Kevin Mathews"
+date: "2025-12-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r readout expression txt file}
+TCGA_GBM_expression <- read.delim("D:/Kevin/Glioblastoma/ref_genome/2025-12-16_TCGA_GBM_expression.txt")
+
+
+TCGA_GBM_expression
+```
+
+
+```{r readout phenotype txt file}
+TCGA_GBM_pheno <- read.delim("D:/Kevin/Glioblastoma/ref_genome/2025-12-16_TCGA_GBM_pheno.txt")
+
+TCGA_GBM_pheno
+
+```
+
+```{r}
+df <-   merge(
+  TCGA_GBM_expression,
+  TCGA_GBM_pheno[, c("Sample", "Subtype")],
+  by = "Sample",
+  all.x = TRUE
+)
+df <- df %>%
+  relocate(Sample, Subtype, .before = 1)
+df_naomit <- na.omit(df)
+row.names(df_naomit) <- df_naomit$Sample
+df_naomit
+```
+
+
+```{r}
+library(dplyr)
+
+# Remove Sample + Subtype columns to get expression matrix
+expr_only <- df_naomit[ , !(names(df_naomit) %in% c("Sample", "Subtype"))]
+
+# Compute average per gene within each subtype
+gene_means_by_subtype <- df_naomit %>%
+  group_by(Subtype) %>%
+  summarise(across(-Sample, ~ mean(.x, na.rm = TRUE)))
+
+# Example: top 10 per subtype
+top_genes <- gene_means_by_subtype %>%
+  tidyr::pivot_longer(-Subtype, names_to = "gene", values_to = "mean_expr") %>%
+  group_by(Subtype) %>%
+  slice_max(mean_expr, n = 50)
+top_genes
+```
+
+
+```{r}
+top_genes_Proneural <- top_genes %>%
+  filter(Subtype == "Proneural") %>%
+  pull(gene)
+top_genes_Proneural
+```
+
+```{r}
+top_genes_Classical <- top_genes %>%
+  filter(Subtype == "Classical") %>%
+  pull(gene)
+top_genes_Classical
+```
+
+```{r}
+top_genes_Mesenchymal <- top_genes %>%
+  filter(Subtype == "Mesenchymal") %>%
+  pull(gene)
+top_genes_Mesenchymal
+```
+
+
+```{r, fig.height=10}
+library(ggplot2)
+ggplot(top_genes, aes(x = reorder(gene, mean_expr), y = mean_expr, fill = Subtype)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  facet_wrap(~Subtype, scales = "free_y") +
+  theme_minimal() +
+  labs(title = "Top 50 Highly Expressed Genes per Subtype",
+       x = "Gene",
+       y = "Mean Expression")
+
+```
+
+###########################################################
+# Analyze the gene expression of each gene within each subtype
+###########################################################
+```{r}
+library(dplyr)
+library(tidyr)
+gene_means_by_subtype <- df_naomit %>%
+  group_by(Subtype) %>%
+  summarise(across(-Sample, ~ mean(.x, na.rm = TRUE)))
+gene_means_by_subtype[1:5, 1:6]  # show first few rows/genes
+```
+
+```{r}
+long_expr <- df_naomit %>%
+  pivot_longer(-c(Sample, Subtype), names_to = "Gene", values_to = "Expression")
+long_expr
+```
+
+```{r}
+library(ggplot2)
+library(ggpubr)
+my_comparisons <- list(c("Proneural", "Classical"), 
+                       c("Proneural", "Mesenchymal"), 
+                       c("Classical", "Mesenchymal"))
+gene <- "SOX10"
+long_expr %>%
+  filter(Gene == gene) %>%
+  ggplot(aes(x = Subtype, y = Expression, fill = Subtype)) +
+  geom_boxplot(alpha = 0.6, outlier.shape = NA) +
+  geom_jitter(aes(color = Subtype), width = 0.2, size = 1.5, alpha = 0.9) +
+  theme_minimal() +
+  labs(title = paste0("Expression of ", gene," across Subtypes")) +
+  stat_compare_means(
+    comparisons = my_comparisons,
+    method = "wilcox.test",    # pairwise non-parametric test
+    label = "p.signif"
+  )+
+  theme(legend.position = "none")
+```
+
+###########################################################
+# Analyze the gene expression of top_gene list from scData within each subtype
+###########################################################
+```{r}
+genes_of_interest <- top_list$PN$gene  # replace with your gene vector
+
+# Directory to save plots
+dir.create(paste0(projPath,"Results_Analysis/2025-09-19/PN_Cluster/"), showWarnings = FALSE)
+output_dir <- paste0(projPath,"Results_Analysis/2025-09-19/PN_Cluster/")
+
+for(gene in genes_of_interest) {
+  p <- long_expr %>%
+    filter(Gene == gene) %>%
+    ggplot(aes(x = Subtype, y = Expression, fill = Subtype)) +
+    geom_boxplot(alpha = 0.6, outlier.shape = NA) +
+    geom_jitter(aes(color = Subtype), width = 0.2, size = 2, alpha = 0.7) +
+    theme_minimal() +
+    labs(title = paste0("Expression of ", gene," across Subtypes")) +
+    stat_compare_means(
+      comparisons = my_comparisons,
+      method = "wilcox.test",
+      label = "p.signif"
+    )
+  
+  # Save plot as PNG
+  ggsave(
+    filename = paste0(output_dir, gene, "_boxplot.png"),
+    plot = p,
+    width = 6,
+    height = 5
+  )
+}
+```
+
+```{r}
+genes_of_interest <- top_list$MES$gene  # replace with your gene vector
+
+# Directory to save plots
+dir.create(paste0(projPath,"Results_Analysis/2025-09-19/MES_Cluster/"), showWarnings = FALSE)
+output_dir <- paste0(projPath,"Results_Analysis/2025-09-19/MES_Cluster/")
+
+for(gene in genes_of_interest) {
+  p <- long_expr %>%
+    filter(Gene == gene) %>%
+    ggplot(aes(x = Subtype, y = Expression, fill = Subtype)) +
+    geom_boxplot(alpha = 0.6, outlier.shape = NA) +
+    geom_jitter(aes(color = Subtype), width = 0.2, size = 2, alpha = 0.7) +
+    theme_minimal() +
+    labs(title = paste0("Expression of ", gene," across Subtypes")) +
+    stat_compare_means(
+      comparisons = my_comparisons,
+      method = "wilcox.test",
+      label = "p.signif"
+    )
+  
+  # Save plot as PNG
+  ggsave(
+    filename = paste0(output_dir, gene, "_boxplot.png"),
+    plot = p,
+    width = 6,
+    height = 5
+  )
+}
+```
+
+# differential expression analysis between subtypes
+```{r}
+library(limma)
+library(dplyr)
+
+# Expression matrix: genes in rows, samples in columns
+expr_mat <- df_naomit %>%
+  dplyr::select(-Sample, -Subtype) %>%
+  t()  # transpose so rows = genes, columns = samples
+
+rownames(expr_mat) <- colnames(df_naomit)[-(1:2)]  # gene names
+colnames(expr_mat) <- df_naomit$Sample
+
+# Create design matrix for subtypes
+subtypes <- df_naomit$Subtype
+design <- model.matrix(~0 + subtypes)
+colnames(design) <- levels(factor(subtypes))
+
+# Fit model
+fit <- lmFit(expr_mat, design)
+
+# Define contrasts (example: Proneural vs Classical, Proneural vs Mesenchymal, Classical vs Mesenchymal)
+contrast_matrix <- makeContrasts(
+  Proneural_vs_Classical = Proneural - Classical,
+  Proneural_vs_Mesenchymal = Proneural - Mesenchymal,
+  Classical_vs_Mesenchymal = Classical - Mesenchymal,
+  levels = design
+)
+
+fit2 <- contrasts.fit(fit, contrast_matrix)
+fit2 <- eBayes(fit2)
+
+# Example: Proneural vs Classical
+top_genes_PC <- topTable(fit2, coef = "Proneural_vs_Classical", number = 100, adjust.method = "BH")
+top_genes_PM <- topTable(fit2, coef = "Proneural_vs_Mesenchymal", number = 100, adjust.method = "BH")
+top_genes_CM <- topTable(fit2, coef = "Classical_vs_Mesenchymal", number = 100, adjust.method = "BH")
+top_genes_PC
+
+
+# Columns include:
+# logFC   : log2 fold-change
+# AveExpr : average expression
+# t       : moderated t-statistic
+# P.Value : raw p-value
+# adj.P.Val : BH-adjusted p-value
+```
+
+```{r}
+# Define one-vs-rest contrasts
+contrast_matrix <- makeContrasts(
+  Proneural_vs_Rest = Proneural - (Classical + Mesenchymal)/2,
+  Classical_vs_Rest = Classical - (Proneural + Mesenchymal)/2,
+  Mesenchymal_vs_Rest = Mesenchymal - (Proneural + Classical)/2,
+  levels = design
+)
+fit <- lmFit(expr_mat, design)
+fit2 <- contrasts.fit(fit, contrast_matrix)
+fit2 <- eBayes(fit2)
+# Proneural vs rest
+top_genes_proneural <- topTable(fit2, coef = "Proneural_vs_Rest", number = Inf, adjust.method = "BH")
+# Classical vs rest
+top_genes_classical <- topTable(fit2, coef = "Classical_vs_Rest", number = Inf, adjust.method = "BH")
+# Mesenchymal vs rest
+top_genes_mesenchymal <- topTable(fit2, coef = "Mesenchymal_vs_Rest", number = Inf, adjust.method = "BH")
+```
+
+```{r}
+sig_proneural <- top_genes_proneural %>% filter(adj.P.Val < 0.05 & logFC > 0)
+sig_proneural
+```
+
+##########################
+# subtype prediction for an external sample
+##########################
+```{r}
+library(dplyr)
+# Compute mean expression per gene per subtype
+ref_profiles <- df_naomit %>%
+  group_by(Subtype) %>%
+  summarise(across(-Sample, ~ mean(.x, na.rm = TRUE))) %>%
+  column_to_rownames("Subtype")
+ref_profiles
+# Result: rows = Subtypes (PN, CL, MES), columns = genes
+```
+
+## External Profile
+```{r}
+df_SubtypeME <- read.csv("D:/AG_Tuoc/Projects/2024-02-01_Glioblastoma/Analysis/mGlio_max/Mouse_Singlet_2025-09-09/wsnn_res.2/df_SubtypeME_2025-08-10.csv")
+head(df_SubtypeME)
+df_external <- df_SubtypeME
+#df_external$Sample <- gsub("^avg_log2FC_", "", df_external$X)
+row.names(df_external) <- df_external$Sample
+colnames(df_external) <- toupper(colnames(df_external))
+# Check
+head(df_external)
+```
+
+```{r}
+common_genes <- intersect(colnames(ref_profiles), colnames(df_external))
+
+ref_profiles_sub <- ref_profiles[, common_genes]
+
+ext_samples_sub <- df_external[, common_genes, drop = FALSE]
+
+pred_results <- data.frame(Sample = rownames(ext_samples_sub), 
+                           Proneural = NA, Classical = NA, Mesenchymal = NA, 
+                           Predicted = NA)
+
+for(i in 1:nrow(ext_samples_sub)) {
+  sample_expr <- as.numeric(ext_samples_sub[i, ])
+  
+  # Compute Spearman correlation
+  cor_scores <- apply(ref_profiles_sub, 1, function(x) cor(x, sample_expr, method = "spearman", use = "complete.obs"))
+  
+    pred_results[i, names(cor_scores)] <- cor_scores
+  pred_results$Predicted[i] <-  names(which.max(cor_scores))
+}
+pred_results
+```
+
+
+```{r}
+pred_results_norm <- pred_results
+pred_results_norm[, 2:4] <- (pred_results[, 2:4] - min(pred_results[, 2:4])) /
+                            (max(pred_results[, 2:4]) - min(pred_results[, 2:4]))
+pred_results_norm
+
+```
+
+```{r, fig.height=6, fig.width=7}
+library(pheatmap)
+library(dplyr)
+
+# Remove the Predicted column for heatmap
+heatmap_mat <- pred_results_norm %>%
+  dplyr::select(Proneural, Classical, Mesenchymal) %>%
+  as.matrix()
+
+# Set row names as Sample
+rownames(heatmap_mat) <- pred_results_norm$Sample
+# Create a data frame for row annotation
+annotation <- data.frame(Predicted = pred_results_norm$Predicted)
+rownames(annotation) <- pred_results_norm$Sample
+
+# Row-wise scaling: (x - mean) / sd
+heatmap_scaled <- t(apply(heatmap_mat, 1, function(x) (x - mean(x)) / sd(x)))
+
+
+# Define colors for predicted subtypes
+ann_colors <- list(Predicted = c(
+  Proneural = "#00BA38",
+  Classical = "#619CFF",
+  Mesenchymal = "#F8766D"
+))
+
+heatmap_plot <- pheatmap(
+  heatmap_scaled,
+  cluster_rows = TRUE,        # cluster samples
+  cluster_cols = FALSE,       # keep subtypes order fixed
+  annotation_row = annotation,
+  annotation_colors = ann_colors,
+  display_numbers = F,     # show correlation values on cells
+  fontsize_number = 10,
+  #color = colorRampPalette(c("lightblue", "tomato"))(50),
+  main = "Correlation of External Samples with GBM Subtypes"
+)
+heatmap_plot
+```
+
+
+

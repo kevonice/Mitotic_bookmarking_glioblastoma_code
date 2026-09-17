@@ -1,0 +1,523 @@
+---
+title: "01_mGlio_QC_2026-01-13"
+author: "Kevin"
+date: "2026-01-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 8
+)
+```
+
+---
+
+# 1. Configuration
+
+```{r config}
+# Project paths
+projPath <- "D:/Kevin/2026-01-08_Glioma/"
+projPath_mGlio <- "D:/Kevin/Glioblastoma/mGlio/"
+projPath_hGlio <- "D:/Kevin/Glioblastoma/hGlio/"
+
+# Analysis date
+date <- Sys.Date()
+```
+
+```{r load_libraries}
+# Load required libraries
+source("D:/Kevin/2026-01-08_Glioma/scripts/Library_singlecell.R")
+library(biomaRt)
+library(harmony)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+```
+
+---
+
+# 2. Data Loading
+
+## 2.1 Load 10X Multiome Data
+
+```{r load_data}
+# Mouse data
+inputdata.10x_mGlio <- Read10X_h5(paste0(projPath_mGlio, "outs/filtered_feature_bc_matrix.h5"))
+rna_counts_mGlio <- inputdata.10x_mGlio$`Gene Expression`
+atac_counts_mGlio <- inputdata.10x_mGlio$Peaks
+
+cat("Mouse RNA features:", nrow(rna_counts_mGlio), "| Cells:", ncol(rna_counts_mGlio), "\n")
+```
+
+---
+
+
+# 3. Mouse Glioblastoma: QC & Preprocessing
+
+## 3.1 Create Seurat Object with RNA + ATAC
+
+```{r mGlio_create_object}
+# Create Seurat object with RNA
+mGlio_raw <- CreateSeuratObject(
+  counts = rna_counts_mGlio,
+  project = "mGlio_pHH3",
+  min.cells = 3
+)
+
+# Add RNA QC metrics
+mGlio_raw[["percent.mt"]] <- PercentageFeatureSet(mGlio_raw, pattern = "^mt-")
+mGlio_raw[["percent.ribo"]] <- PercentageFeatureSet(mGlio_raw, pattern = "^Rp[sl][[:digit:]]|^Rplp[[:digit:]]|^Rpsa")
+
+# Prepare ATAC data
+grange.counts_mGlio <- StringToGRanges(rownames(atac_counts_mGlio), sep = c(":", "-"))
+grange.use_mGlio <- seqnames(grange.counts_mGlio) %in% standardChromosomes(grange.counts_mGlio)
+atac_counts_mGlio <- atac_counts_mGlio[as.vector(grange.use_mGlio), ]
+
+# Get annotations (using mm10)
+library(EnsDb.Mmusculus.v79)
+annotations_mGlio <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
+seqlevelsStyle(annotations_mGlio) <- 'UCSC'
+genome(annotations_mGlio) <- "mm10"
+
+# Create ChromatinAssay
+frag.file_mGlio <- paste0(projPath_mGlio, "outs/atac_fragments.tsv.gz")
+chrom_assay_mGlio <- CreateChromatinAssay(
+  counts = atac_counts_mGlio,
+  sep = c(":", "-"),
+  genome = 'mm10',
+  fragments = frag.file_mGlio,
+  min.cells = 10,
+  annotation = annotations_mGlio
+)
+mGlio_raw[["ATAC"]] <- chrom_assay_mGlio
+
+# Compute ATAC QC metrics
+mGlio_raw <- NucleosomeSignal(mGlio_raw, assay = "ATAC")
+mGlio_raw <- TSSEnrichment(mGlio_raw, assay = "ATAC")
+
+# Add Cell Ranger ATAC metrics
+metadata_cellranger_mGlio <- read.csv(paste0(projPath_mGlio, "outs/per_barcode_metrics.csv"))
+row.names(metadata_cellranger_mGlio) <- metadata_cellranger_mGlio$barcode
+mGlio_raw <- AddMetaData(mGlio_raw, metadata = metadata_cellranger_mGlio)
+
+# Calculate additional QC metrics
+mGlio_raw$pct_reads_in_peaks <- mGlio_raw$atac_peak_region_fragments / mGlio_raw$atac_fragments * 100
+mGlio_raw$blacklist_fraction <- FractionCountsInRegion(
+  object = mGlio_raw,
+  assay = 'ATAC',
+  regions = blacklist_mm10
+)
+mGlio_raw$blacklist_ratio <- mGlio_raw$blacklist_fraction / mGlio_raw$atac_peak_region_fragments
+mGlio_raw$log10GenesPerUMI <- log10(mGlio_raw$nFeature_RNA) / log10(mGlio_raw$nCount_RNA)
+mGlio_raw$pct.mt.atac <- mGlio_raw$atac_mitochondrial_reads / mGlio_raw$atac_fragments * 100
+
+
+```
+
+```{r save raw rds}
+saveRDS(mGlio_raw, file = paste0(projPath, "mGlio_raw", date, ".rds") )
+```
+
+
+```{r QC panel raw hGlio,fig.height=10, fig.width=12}
+
+#https://hbctraining.github.io/scRNA-seq/lessons/04_SC_quality_control.html
+
+# Visualize the number of cell counts per sample
+
+obj <- mGlio_raw
+
+plot_density <- function(x, color_var = "orig.ident", fill_var = "orig.ident", logx = TRUE) {
+
+    p <- obj@meta.data %>%
+
+      ggplot(aes_string(x = x, color = color_var, fill = fill_var)) +
+
+      geom_density(alpha = 0.4) +
+
+      theme_classic()
+
+    if (logx) p <- p + scale_x_log10()
+
+    p
+
+  }
+
+max_count <- max(table(obj@meta.data$orig.ident))
+
+v1 <- obj@meta.data %>% 
+
+  ggplot(aes(x = orig.ident, fill = orig.ident)) + 
+
+  geom_bar(width = 0.5) +
+
+  theme_classic() +
+
+  theme(axis.text.x = NULL) + #element_text(angle = 45, vjust = 1, hjust = 1)
+
+  geom_text(
+
+    aes(label = ..count..),  
+
+    stat = 'count',
+
+    vjust = -0.5,
+
+    size = 4) +
+
+  scale_y_continuous(limits = c(0, max_count * 1.5)) +  # Adjust y-axis
+
+  ggtitle("Number of cells")
+
+v2  <- plot_density("nCount_RNA") + ylab("Cell density") +
+
+                    geom_vline(xintercept = c(778.00 , 18607.5))
+
+v3  <- plot_density("nFeature_RNA")+
+
+    geom_vline(xintercept = c(350, 5218.0))
+
+v4  <- plot_density("percent.mt") + geom_vline(xintercept = 4)
+
+  
+
+v5 <- obj@meta.data %>%
+
+    ggplot(aes(x = nCount_RNA, y = nFeature_RNA, color = percent.mt)) +
+
+    geom_point() +
+
+    scale_colour_gradient(low = "gray90", high = "black") +
+
+    stat_smooth(method = lm) +
+
+    scale_x_log10() + scale_y_log10() +
+
+    theme_classic()
+
+  
+
+v6  <- plot_density("percent.ribo")+
+
+  	geom_vline(xintercept = 10)
+
+v7  <- plot_density("log10GenesPerUMI")+
+
+  	geom_vline(xintercept = 0.8)
+
+v8  <- plot_density("nCount_ATAC")+
+
+  	geom_vline(xintercept = c(150, 18035.2))
+
+v9  <- plot_density("TSS.enrichment")+
+
+  	geom_vline(xintercept = c(1,15))
+
+v10 <- plot_density("nucleosome_signal")+
+
+  	geom_vline(xintercept = 2)
+
+v11 <- plot_density("pct_reads_in_peaks")+
+
+  	geom_vline(xintercept = 30)
+
+v12 <- plot_density("blacklist_ratio")+
+
+  	geom_vline(xintercept = 2.403511e-04)
+
+qc_panel <- ggarrange(v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12,
+                      ncol = 3, nrow = 4, common.legend = TRUE, legend = "right")
+
+ggsave(
+  filename = "QC_panel_mGlio_raw.png",
+  plot     = qc_panel,
+  width    = 12,
+  height   = 10,
+  units    = "in",
+  dpi      = 300
+)
+
+```
+
+## 3.2 QC Filtering
+
+```{r mGlio_qc_filter}
+# Filter cells based on QC thresholds
+mGlio <- subset(
+  x = mGlio_raw,
+  subset = 
+    nCount_RNA >= 778.00 & nCount_RNA <= 18607.5 & #2% and 95%
+    nFeature_RNA  >= 350 & nFeature_RNA  <= 5218.0 &
+    nCount_ATAC >= 150 & nCount_ATAC <= 18035.2 &
+    percent.mt <= 4 &
+    percent.ribo <= 10 &
+    TSS.enrichment > 1 & TSS.enrichment < 15 &
+    blacklist_ratio <= 2.403511e-04 & #98%
+    nucleosome_signal <= 2 &  nucleosome_signal >= 0.3 &
+    log10GenesPerUMI >= 0.8 &
+    pct_reads_in_peaks >= 30)
+
+cat("Mouse cells before QC:", ncol(mGlio_raw), "\n")
+cat("Mouse cells after QC:", ncol(mGlio), "\n")
+```
+
+```{r QC panel post QC mGlio,fig.height=10, fig.width=12}
+
+#https://hbctraining.github.io/scRNA-seq/lessons/04_SC_quality_control.html
+
+# Visualize the number of cell counts per sample
+
+obj <- mGlio
+
+plot_density <- function(x, color_var = "orig.ident", fill_var = "orig.ident", logx = TRUE) {
+
+    p <- obj@meta.data %>%
+
+      ggplot(aes_string(x = x, color = color_var, fill = fill_var)) +
+
+      geom_density(alpha = 0.4) +
+
+      theme_classic()
+
+    if (logx) p <- p + scale_x_log10()
+
+    p
+
+  }
+
+max_count <- max(table(obj@meta.data$orig.ident))
+
+v1 <- obj@meta.data %>% 
+
+  ggplot(aes(x = orig.ident, fill = orig.ident)) + 
+
+  geom_bar(width = 0.5) +
+
+  theme_classic() +
+
+  theme(axis.text.x = NULL) + #element_text(angle = 45, vjust = 1, hjust = 1)
+
+  geom_text(
+
+    aes(label = ..count..),  
+
+    stat = 'count',
+
+    vjust = -0.5,
+
+    size = 4) +
+
+  scale_y_continuous(limits = c(0, max_count * 1.5)) +  # Adjust y-axis
+
+  ggtitle("Number of cells")
+
+v2  <- plot_density("nCount_RNA") + ylab("Cell density") +
+
+                    geom_vline(xintercept = c(778.00 , 18607.5))
+
+v3  <- plot_density("nFeature_RNA")+
+
+    geom_vline(xintercept = c(350, 5218.0))
+
+v4  <- plot_density("percent.mt") + geom_vline(xintercept = 4)
+
+  
+
+v5 <- obj@meta.data %>%
+
+    ggplot(aes(x = nCount_RNA, y = nFeature_RNA, color = percent.mt)) +
+
+    geom_point() +
+
+    scale_colour_gradient(low = "gray90", high = "black") +
+
+    stat_smooth(method = lm) +
+
+    scale_x_log10() + scale_y_log10() +
+
+    theme_classic()
+
+  
+
+v6  <- plot_density("percent.ribo")+
+
+  	geom_vline(xintercept = 10)
+
+v7  <- plot_density("log10GenesPerUMI")+
+
+  	geom_vline(xintercept = 0.8)
+
+v8  <- plot_density("nCount_ATAC")+
+
+  	geom_vline(xintercept = c(150, 18035.2))
+
+v9  <- plot_density("TSS.enrichment")+
+
+  	geom_vline(xintercept = c(1,15))
+
+v10 <- plot_density("nucleosome_signal")+
+
+  	geom_vline(xintercept = 2)
+
+v11 <- plot_density("pct_reads_in_peaks")+
+
+  	geom_vline(xintercept = 30)
+
+v12 <- plot_density("blacklist_ratio")+
+
+  	geom_vline(xintercept = 2.403511e-04)
+
+qc_panel <- ggarrange(v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12,
+                      ncol = 4, nrow = 3, common.legend = TRUE, legend = "right")
+
+ggsave(
+  filename = "QC_panel_mGlio_post_QC.png",
+  plot     = qc_panel,
+  width    = 12,
+  height   = 5,
+  units    = "in",
+  dpi      = 300
+)
+
+```
+## 3.3 Doublet Removal 
+
+```{r mGlio_doublet_removal, eval=FALSE}
+# Load object with DoubletFinder results (if available)
+mGlio_with_doublets <- readRDS("D:/Kevin/Glioblastoma/mGlio_2025-08-10.rds")
+singlet_barcodes <- rownames(mGlio_with_doublets@meta.data[
+  mGlio_with_doublets$DF.classifications_0.25_3_8406 == "Singlet",
+])
+mGlio <- subset(mGlio, cells = singlet_barcodes)
+
+# Check mGlio dataset after removing doublets
+cat("Mouse cells before doublet removal:", ncol(mGlio_with_doublets), "\n")
+cat("Mouse cells after doublet removal:", ncol(mGlio), "\n")
+```
+
+## 3.4 Normalization & Dimensionality Reduction
+
+```{r mGlio_preprocessing}
+# --- ATAC preprocessing ---
+DefaultAssay(mGlio) <- "ATAC"
+mGlio <- RunTFIDF(mGlio) %>%
+  FindTopFeatures(min.cutoff = 'q0') %>%
+  RunSVD() %>%
+  RunUMAP(reduction = 'lsi', dims = 2:50,
+          reduction.name = "umap.atac", reduction.key = "atacUMAP_")
+Annotation(mGlio) <- annotations_mGlio
+
+# --- RNA preprocessing ---
+DefaultAssay(mGlio) <- "RNA"
+vars.to.regress <- c("percent.mt", "percent.ribo", "nCount_RNA")
+
+mGlio <- NormalizeData(mGlio, verbose = FALSE)
+mGlio <- ScaleData(mGlio, vars.to.regress = vars.to.regress, features = rownames(mGlio))
+mGlio <- FindVariableFeatures(mGlio, selection.method = "vst", verbose = FALSE)
+mGlio <- RunPCA(mGlio, features = rownames(mGlio), verbose = FALSE,reduction.name = "pca.rna")
+mGlio <- RunUMAP(mGlio, dims = 1:50, verbose = FALSE, reduction = "pca.rna",
+                 reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_')
+
+# --- SCTransform ---
+options(future.globals.maxSize = 4 * 1024^3)
+mGlio <- SCTransform(mGlio, verbose = FALSE, vars.to.regress = vars.to.regress,
+                     return.only.var.genes = FALSE, method = "glmGamPoi") %>%
+  RunPCA(reduction.name = "pca.sct") %>%
+  RunUMAP(dims = 1:50, reduction.name = 'umap.sct', reduction.key = 'sctUMAP_',reduction ="pca.sct")
+
+# --- Weighted Nearest Neighbor (WNN) with SCT---
+DefaultAssay(mGlio) <- "SCT"
+mGlio <- FindMultiModalNeighbors(
+  mGlio,
+  reduction.list = list("pca.sct", "lsi"),
+  dims.list = list(1:50, 2:50),
+  modality.weight.name = "SCT.weight",
+  knn.graph.name = "wknn.sct",
+  snn.graph.name = "wsnn.sct",
+  weighted.nn.name = "weighted.nn.sct"
+)
+
+mGlio <- RunUMAP(mGlio, nn.name = "weighted.nn.sct",
+                 reduction.name = "wnn.sct.umap", reduction.key = "wnnSCTUMAP_")
+mGlio <- FindClusters(mGlio, graph.name = "wsnn.sct", algorithm = 3,
+                      verbose = FALSE, resolution = c(seq(0.1, 2, by = 0.1)))
+
+# --- Weighted Nearest Neighbor (WNN) with RNA---
+DefaultAssay(mGlio) <- "RNA"
+mGlio <- FindMultiModalNeighbors(
+  mGlio,
+  reduction.list = list("pca.rna", "lsi"),
+  dims.list = list(1:50, 2:50),
+  modality.weight.name = "RNA.weight",
+  knn.graph.name = "wknn.rna",
+  snn.graph.name = "wsnn.rna",
+  weighted.nn.name = "weighted.nn.rna"
+)
+
+mGlio <- RunUMAP(mGlio, nn.name = "weighted.nn.rna",
+                 reduction.name = "wnn.rna.umap", reduction.key = "wnnRNAUMAP_")
+mGlio <- FindClusters(mGlio, graph.name = "wsnn.rna", algorithm = 3,
+                      verbose = FALSE, resolution = c(seq(0.1, 2, by = 0.1)))
+
+# Save checkpoint
+saveRDS(mGlio, file = paste0(projPath, "mGlio_", date, ".rds"))
+```
+
+# Plot
+```{r, fig.height=5,fig.width= 10}
+p1 <- DimPlot(mGlio, reduction = "wnn.rna.umap", group.by = "wsnn.rna_res.0.1", pt.size = 1)
+p2 <- DimPlot(mGlio, reduction = "wnn.sct.umap", group.by = "wsnn.sct_res.0.1", pt.size = 1)
+
+p1 + p2
+
+ggsave(paste0(projPath,"/plots/",date, "mGlio_wnn.umap_sct&rna.png"), dpi = 300, width = 10, height = 5)
+```
+
+## 3.5 Visualize Mouse Data
+
+```{r mGlio_viz, fig.width=18, fig.height=6}
+Idents(mGlio) <-  "wsnn_res.0.1"
+p1 <- DimPlot(mGlio, reduction = "umap.atac", label = TRUE,
+              label.color = "black", label.size = 4, pt.size = 1.5) +
+  ggtitle("Mouse ATAC") + NoLegend()
+p2 <- DimPlot(mGlio, reduction = "umap.rna", label = TRUE,
+              label.color = "black", label.size = 4, pt.size = 1.5) +
+  ggtitle("Mouse RNA") + NoLegend()
+p3 <- DimPlot(mGlio, reduction = "wnn.umap", label = TRUE,
+              label.color = "black", label.size = 4, pt.size = 1.5) +
+  ggtitle("Mouse WNN")
+p1 + p2 + p3
+```
+## Visualize clusters at different resolutions 
+```{r, fig.height= 15, fig.width= 30}
+DimPlot(mGlio, reduction = "wnn.rna.umap", group.by = paste0("wsnn.rna_res.",seq(0.1,2,0.1)),label = T,ncol=5)
+
+ggsave(paste0(projPath,"/plots/",Sys.Date(),"mGlio_res_0.1-2_wnn_umap.png"),dpi = 300)
+```
+
+
+
+```{r,fig.height=5,fig.width=10}
+Idents(mGlio) <- "wsnn.rna_res.0.1"
+DefaultAssay(mGlio) <- "RNA"
+FeaturePlot(mGlio,features = c("SOX10","OLIG2"),reduction= "wnn.rna.umap")
+```
+
+
+
+---
+
+
+
+
+
+# Session Info
+
+```{r session_info}
+sessionInfo()
+```
